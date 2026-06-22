@@ -8,7 +8,7 @@ DB_HOST = "aws-1-us-east-2.pooler.supabase.com"
 DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASS = "Lif#Cari.Fuk"
-DB_PORT = "5432"
+DB_PORT = "6543"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
