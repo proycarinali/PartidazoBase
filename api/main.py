@@ -4,7 +4,7 @@ from psycopg2 import extras
 from datetime import datetime, timedelta
 import time
 
-DB_HOST = "db.vlndghikrjvxmiibbqbo.supabase.co"
+DB_HOST = "aws-1-us-east-2.pooler.supabase.com"
 DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASS = "Lif#Cari.Fuk"
