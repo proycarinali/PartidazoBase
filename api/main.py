@@ -126,8 +126,6 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
 
         cursor = conn.cursor()
 
-        fecha_partido = header.get('date') or competitions.get('date')
-
         cursor.execute('''
             INSERT INTO partidos (id_partido, fecha_partido, liga_nombre,
                 equipo_local_id, equipo_local_nombre, equipo_local_goles,
@@ -135,12 +133,11 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                 ganador, tanda_penales)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id_partido) DO UPDATE SET
-                fecha_partido = EXCLUDED.fecha_partido,
                 equipo_local_goles = EXCLUDED.equipo_local_goles,
                 equipo_visitante_goles = EXCLUDED.equipo_visitante_goles,
                 ganador = EXCLUDED.ganador;
         ''', (
-            id_partido, fecha_partido, header.get('league', {}).get('name'),
+            id_partido, header.get('date'), header.get('league', {}).get('name'),
             local.get('team', {}).get('id'), local.get('team', {}).get('name'), g_local,
             visitante.get('team', {}).get('id'), visitante.get('team', {}).get('name'), g_vis,
             ganador, hubo_penales
@@ -163,25 +160,36 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                     j.get('starter', True)
                 ))
 
-        TIPOS_EVENTO = {'Goal', 'Penalty', 'Yellow Card', 'Red Card', 'Yellow-Red Card', 'Substitution'}
-        for detalle in competitions.get('details', []):
-            tipo = detalle.get('type', {}).get('text', '')
-            atletas = detalle.get('athletesInvolved', [])
-            if not atletas:
+        # keyEvents es top-level en el summary, no dentro de competitions
+        for evento in datos.get('keyEvents', []):
+            tipo = evento.get('type', {}).get('text', '')
+            # Filtramos solo goles y penales
+            if not ('Goal' in tipo or 'Penalty' in tipo or evento.get('scoringPlay', False)):
                 continue
-            if not tipo or not any(t.lower() in tipo.lower() for t in TIPOS_EVENTO):
-                continue
-            id_ev  = detalle.get('id', f"{id_partido}_{time.time_ns()}")
-            minuto = int(''.join(filter(str.isdigit, detalle.get('clock', {}).get('displayValue', '0'))) or 0)
+
+            id_ev  = evento.get('id', f"{id_partido}_{time.time_ns()}")
+            clock  = evento.get('clock', {})
+            # El clock puede venir como "45'" o "45:00" — extraemos solo dígitos del valor antes de ':'
+            clock_raw = clock.get('displayValue', '0').split(':')[0]
+            minuto = int(''.join(filter(str.isdigit, clock_raw)) or 0)
+
+            # Determinamos el periodo
+            periodo_num = evento.get('period', {}).get('number', 1)
+            periodo_txt = evento.get('period', {}).get('type', 'REGULAR')
+            periodo = f"P{periodo_num}" if periodo_txt == 'REGULAR' else periodo_txt.upper()
+
+            # ESPN no expone atleta en keyEvents — guardamos NULL
             cursor.execute('''
                 INSERT INTO eventos_partido
                     (id_evento, id_partido, id_equipo, id_jugador, nombre_jugador, tipo_evento, minuto, periodo)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id_evento) DO NOTHING;
             ''', (
-                id_ev, id_partido, detalle.get('team', {}).get('id'), "0",
-                atletas[0].get('displayName', 'Desconocido'),
-                tipo, minuto, "REGULAR"
+                id_ev, id_partido,
+                None,   # keyEvents no expone id de equipo
+                None,   # keyEvents no expone atleta
+                None,   # keyEvents no expone atleta
+                tipo, minuto, periodo
             ))
 
         conn.commit()
