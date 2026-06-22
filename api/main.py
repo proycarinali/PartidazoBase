@@ -6,7 +6,7 @@ import time
 
 DB_HOST = "aws-1-us-east-2.pooler.supabase.com"
 DB_NAME = "postgres"
-DB_USER = "postgres"
+DB_USER = "postgres.vlndghikrjvxmiibbqbo"
 DB_PASS = "Lif#Cari.Fuk"
 DB_PORT = "6543"
 
