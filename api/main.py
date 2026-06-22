@@ -170,32 +170,39 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                     j.get('starter', True)
                 ))
 
-        # Tipos de evento que nos interesan (type.type de ESPN)
-        TIPOS_INTERES = {'goal', 'penalty', 'yellow card', 'red card', 'yellow-red card',
-                         'yellowcard', 'redcard', 'yellowredcard', 'penaltygoal', 'owngoal',
-                         'missed penalty', 'penalty missed'}
+        # Mapa de type.type de ESPN → categoría normalizada que guardamos
+        # Ignoramos kickoff, halftime, start-2nd-half, end-regular-time (sin participants)
+        TIPO_MAP = {
+            'goal':               'Gol',
+            'own-goal':           'Gol en Propia',
+            'penalty---scored':   'Penal Convertido',
+            'penalty---missed':   'Penal Fallado',
+            'penalty---saved':    'Penal Atajado',
+            'yellow-card':        'Tarjeta Amarilla',
+            'red-card':           'Tarjeta Roja',
+            'yellow-red-card':    'Doble Amarilla',
+            'substitution':       'Sustitución',
+        }
 
         for evento in datos.get('keyEvents', []):
-            tipo_obj  = evento.get('type', {})
-            tipo_text = tipo_obj.get('text', '')          # "Goal", "Yellow Card", etc.
-            tipo_type = tipo_obj.get('type', '').lower()  # "goal", "yellowcard", etc.
+            tipo_type = evento.get('type', {}).get('type', '').lower()
 
-            # Filtramos: scoring plays + tarjetas + penales
-            es_relevante = (
-                evento.get('scoringPlay', False)
-                or tipo_type in TIPOS_INTERES
-                or any(t in tipo_text for t in ('Goal', 'Penalty', 'Yellow', 'Red', 'Card'))
-            )
-            if not es_relevante:
+            # Solo procesamos tipos que están en nuestro mapa
+            if tipo_type not in TIPO_MAP:
+                continue
+
+            # Si no hay participants, no hay jugador — igual insertamos el evento
+            participantes = evento.get('participants', [])
+            if not participantes:
                 continue
 
             id_ev = evento.get('id', f"{id_partido}_{time.time_ns()}")
 
-            # Minuto: ESPN da clock.value en segundos y displayValue como "6'"
+            # Minuto desde displayValue: "6'" → 6, "45+2'" → 45
             clock_display = evento.get('clock', {}).get('displayValue', '0')
-            minuto = int(''.join(filter(str.isdigit, clock_display.split(':')[0])) or 0)
+            minuto = int(''.join(filter(str.isdigit, clock_display.split('+')[0].split(':')[0])) or 0)
 
-            # Periodo: number=1 → "P1", number=2 → "P2", extras → "ET", penales → "PS"
+            # Periodo
             periodo_num = evento.get('period', {}).get('number', 1)
             if periodo_num <= 2:
                 periodo = f"P{periodo_num}"
@@ -204,24 +211,16 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
             elif periodo_num == 4:
                 periodo = "ET2"
             else:
-                periodo = "PS"  # shootout
+                periodo = "PS"
 
-            # Equipo: viene directo en evento.team
-            id_equipo = evento.get('team', {}).get('id')
+            id_equipo      = evento.get('team', {}).get('id')
+            tipo_limpio    = TIPO_MAP[tipo_type]
+            texto_evento   = evento.get('text', '')
 
-            # Atleta principal (goleador, amonestado, expulsado) = participants[0]
-            participantes = evento.get('participants', [])
-            atleta_principal = participantes[0].get('athlete', {}) if participantes else {}
-            id_jugador    = atleta_principal.get('id')
-            nombre_jugador = atleta_principal.get('displayName')
-
-            # Asistente = participants[1] si existe (solo aplica a goles)
-            atleta_asistente = participantes[1].get('athlete', {}) if len(participantes) > 1 else {}
-            id_asistente    = atleta_asistente.get('id')
-            nombre_asistente = atleta_asistente.get('displayName')
-
-            # Texto descriptivo completo del evento
-            texto_evento = evento.get('text', '')
+            # participants[0] = actor principal (goleador, amonestado, sale en sust.)
+            # participants[1] = secundario (asistente en gol, entra en sust.)
+            atleta_0 = participantes[0].get('athlete', {})
+            atleta_1 = participantes[1].get('athlete', {}) if len(participantes) > 1 else {}
 
             cursor.execute('''
                 INSERT INTO eventos_partido
@@ -231,9 +230,13 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id_evento) DO NOTHING;
             ''', (
-                id_ev, id_partido, id_equipo, id_jugador, nombre_jugador,
-                tipo_text, minuto, periodo,
-                id_asistente, nombre_asistente, texto_evento
+                id_ev, id_partido, id_equipo,
+                atleta_0.get('id'),          # goleador / amonestado / sale
+                atleta_0.get('displayName'),
+                tipo_limpio, minuto, periodo,
+                atleta_1.get('id') or None,          # asistente / entra (None si no hay)
+                atleta_1.get('displayName') or None,
+                texto_evento
             ))
 
         conn.commit()
