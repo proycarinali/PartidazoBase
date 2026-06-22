@@ -126,6 +126,8 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
 
         cursor = conn.cursor()
 
+        fecha_partido = header.get('date') or competitions.get('date')
+
         cursor.execute('''
             INSERT INTO partidos (id_partido, fecha_partido, liga_nombre,
                 equipo_local_id, equipo_local_nombre, equipo_local_goles,
@@ -133,11 +135,12 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                 ganador, tanda_penales)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id_partido) DO UPDATE SET
+                fecha_partido = EXCLUDED.fecha_partido,
                 equipo_local_goles = EXCLUDED.equipo_local_goles,
                 equipo_visitante_goles = EXCLUDED.equipo_visitante_goles,
                 ganador = EXCLUDED.ganador;
         ''', (
-            id_partido, header.get('date'), header.get('league', {}).get('name'),
+            id_partido, fecha_partido, header.get('league', {}).get('name'),
             local.get('team', {}).get('id'), local.get('team', {}).get('name'), g_local,
             visitante.get('team', {}).get('id'), visitante.get('team', {}).get('name'), g_vis,
             ganador, hubo_penales
@@ -160,21 +163,26 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                     j.get('starter', True)
                 ))
 
+        TIPOS_EVENTO = {'Goal', 'Penalty', 'Yellow Card', 'Red Card', 'Yellow-Red Card', 'Substitution'}
         for detalle in competitions.get('details', []):
             tipo = detalle.get('type', {}).get('text', '')
-            if 'Goal' in tipo or 'Penalty' in tipo:
-                id_ev  = detalle.get('id', f"{id_partido}_{time.time_ns()}")
-                minuto = int(''.join(filter(str.isdigit, detalle.get('clock', {}).get('displayValue', '0'))) or 0)
-                cursor.execute('''
-                    INSERT INTO eventos_partido
-                        (id_evento, id_partido, id_equipo, id_jugador, nombre_jugador, tipo_evento, minuto, periodo)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (id_evento) DO NOTHING;
-                ''', (
-                    id_ev, id_partido, detalle.get('team', {}).get('id'), "0",
-                    detalle.get('athletesInvolved', [{}])[0].get('displayName', 'Desconocido'),
-                    tipo, minuto, "REGULAR"
-                ))
+            atletas = detalle.get('athletesInvolved', [])
+            if not atletas:
+                continue
+            if not tipo or not any(t.lower() in tipo.lower() for t in TIPOS_EVENTO):
+                continue
+            id_ev  = detalle.get('id', f"{id_partido}_{time.time_ns()}")
+            minuto = int(''.join(filter(str.isdigit, detalle.get('clock', {}).get('displayValue', '0'))) or 0)
+            cursor.execute('''
+                INSERT INTO eventos_partido
+                    (id_evento, id_partido, id_equipo, id_jugador, nombre_jugador, tipo_evento, minuto, periodo)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (id_evento) DO NOTHING;
+            ''', (
+                id_ev, id_partido, detalle.get('team', {}).get('id'), "0",
+                atletas[0].get('displayName', 'Desconocido'),
+                tipo, minuto, "REGULAR"
+            ))
 
         conn.commit()
         cursor.close()
