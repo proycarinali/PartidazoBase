@@ -7,7 +7,7 @@ import time
 # --- 1. CONFIGURACIÓN DE TU BASE DE DATOS EN SUPABASE ---
 # Copia estos datos desde el panel de Configuración -> Database de Supabase
 
-DB_HOST = "db.apghhrgroddqnbyijlxo.supabase.co" # Cambia esto
+DB_HOST = "db.vlndghikrjvxmiibbqbo.supabase.co" # Cambia esto
 DB_NAME = "postgres"                     # Por defecto en Supabase siempre es 'postgres'
 DB_USER = "postgres"                     # Por defecto es 'postgres'
 DB_PASS = "Lif#Cari.Fuk"    # La contraseña que creaste al inicio
