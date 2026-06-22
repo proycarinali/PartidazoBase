@@ -64,9 +64,19 @@ def iniciar_tablas_supabase(conn):
             nombre_jugador VARCHAR(150),
             tipo_evento VARCHAR(50),
             minuto INT,
-            periodo VARCHAR(20)
+            periodo VARCHAR(20),
+            id_asistente VARCHAR(50),
+            nombre_asistente VARCHAR(150),
+            texto_evento TEXT
         );
     ''')
+    # Migración no destructiva: agrega columnas si la tabla ya existía sin ellas
+    for col, definition in [
+        ("id_asistente",    "VARCHAR(50)"),
+        ("nombre_asistente","VARCHAR(150)"),
+        ("texto_evento",    "TEXT"),
+    ]:
+        cursor.execute(f"ALTER TABLE eventos_partido ADD COLUMN IF NOT EXISTS {col} {definition};")
     conn.commit()
     cursor.close()
     print("✓ Tablas verificadas.")
@@ -160,36 +170,70 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                     j.get('starter', True)
                 ))
 
-        # keyEvents es top-level en el summary, no dentro de competitions
+        # Tipos de evento que nos interesan (type.type de ESPN)
+        TIPOS_INTERES = {'goal', 'penalty', 'yellow card', 'red card', 'yellow-red card',
+                         'yellowcard', 'redcard', 'yellowredcard', 'penaltygoal', 'owngoal',
+                         'missed penalty', 'penalty missed'}
+
         for evento in datos.get('keyEvents', []):
-            tipo = evento.get('type', {}).get('text', '')
-            # Filtramos solo goles y penales
-            if not ('Goal' in tipo or 'Penalty' in tipo or evento.get('scoringPlay', False)):
+            tipo_obj  = evento.get('type', {})
+            tipo_text = tipo_obj.get('text', '')          # "Goal", "Yellow Card", etc.
+            tipo_type = tipo_obj.get('type', '').lower()  # "goal", "yellowcard", etc.
+
+            # Filtramos: scoring plays + tarjetas + penales
+            es_relevante = (
+                evento.get('scoringPlay', False)
+                or tipo_type in TIPOS_INTERES
+                or any(t in tipo_text for t in ('Goal', 'Penalty', 'Yellow', 'Red', 'Card'))
+            )
+            if not es_relevante:
                 continue
 
-            id_ev  = evento.get('id', f"{id_partido}_{time.time_ns()}")
-            clock  = evento.get('clock', {})
-            # El clock puede venir como "45'" o "45:00" — extraemos solo dígitos del valor antes de ':'
-            clock_raw = clock.get('displayValue', '0').split(':')[0]
-            minuto = int(''.join(filter(str.isdigit, clock_raw)) or 0)
+            id_ev = evento.get('id', f"{id_partido}_{time.time_ns()}")
 
-            # Determinamos el periodo
+            # Minuto: ESPN da clock.value en segundos y displayValue como "6'"
+            clock_display = evento.get('clock', {}).get('displayValue', '0')
+            minuto = int(''.join(filter(str.isdigit, clock_display.split(':')[0])) or 0)
+
+            # Periodo: number=1 → "P1", number=2 → "P2", extras → "ET", penales → "PS"
             periodo_num = evento.get('period', {}).get('number', 1)
-            periodo_txt = evento.get('period', {}).get('type', 'REGULAR')
-            periodo = f"P{periodo_num}" if periodo_txt == 'REGULAR' else periodo_txt.upper()
+            if periodo_num <= 2:
+                periodo = f"P{periodo_num}"
+            elif periodo_num == 3:
+                periodo = "ET1"
+            elif periodo_num == 4:
+                periodo = "ET2"
+            else:
+                periodo = "PS"  # shootout
 
-            # ESPN no expone atleta en keyEvents — guardamos NULL
+            # Equipo: viene directo en evento.team
+            id_equipo = evento.get('team', {}).get('id')
+
+            # Atleta principal (goleador, amonestado, expulsado) = participants[0]
+            participantes = evento.get('participants', [])
+            atleta_principal = participantes[0].get('athlete', {}) if participantes else {}
+            id_jugador    = atleta_principal.get('id')
+            nombre_jugador = atleta_principal.get('displayName')
+
+            # Asistente = participants[1] si existe (solo aplica a goles)
+            atleta_asistente = participantes[1].get('athlete', {}) if len(participantes) > 1 else {}
+            id_asistente    = atleta_asistente.get('id')
+            nombre_asistente = atleta_asistente.get('displayName')
+
+            # Texto descriptivo completo del evento
+            texto_evento = evento.get('text', '')
+
             cursor.execute('''
                 INSERT INTO eventos_partido
-                    (id_evento, id_partido, id_equipo, id_jugador, nombre_jugador, tipo_evento, minuto, periodo)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    (id_evento, id_partido, id_equipo, id_jugador, nombre_jugador,
+                     tipo_evento, minuto, periodo,
+                     id_asistente, nombre_asistente, texto_evento)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id_evento) DO NOTHING;
             ''', (
-                id_ev, id_partido,
-                None,   # keyEvents no expone id de equipo
-                None,   # keyEvents no expone atleta
-                None,   # keyEvents no expone atleta
-                tipo, minuto, periodo
+                id_ev, id_partido, id_equipo, id_jugador, nombre_jugador,
+                tipo_text, minuto, periodo,
+                id_asistente, nombre_asistente, texto_evento
             ))
 
         conn.commit()
