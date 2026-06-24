@@ -5,8 +5,6 @@ from datetime import datetime, timedelta
 import time
 import json
 import uuid
-import os
-import openai
 
 DB_HOST = "aws-1-us-east-2.pooler.supabase.com"
 DB_NAME = "postgres"
@@ -14,8 +12,8 @@ DB_USER = "postgres.vlndghikrjvxmiibbqbo"
 DB_PASS = "Lif#Cari.Fuk"
 DB_PORT = "6543"
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")        # ← completar con tu clave de OpenAI
-OPENAI_MODEL   = "gpt-4o-mini"   # podés cambiarlo por "gpt-4-turbo" o "gpt-3.5-turbo"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY_")   # ← tu clave de Gemini (gratis en aistudio.google.com)
+GEMINI_MODEL   = "gemini-1.5-flash"  # rápido y gratuito
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -362,17 +360,23 @@ def generar_preguntas_partido(id_partido, conn):
     )
 
     try:
-        openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        respuesta = openai_client.chat.completions.create(
-            model=OPENAI_MODEL,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": prompt_sistema},
-                {"role": "user",   "content": prompt_usuario},
-            ],
-            max_tokens=2500,
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
         )
-        contenido = respuesta.choices[0].message.content.strip()
+        payload = {
+            "contents": [
+                {"role": "user", "parts": [{"text": prompt_sistema + "\n\n" + prompt_usuario}]}
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 4000,
+                "responseMimeType": "application/json",  # fuerza JSON puro
+            },
+        }
+        resp = requests.post(url, json=payload, timeout=60)
+        resp.raise_for_status()
+        contenido = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         datos = json.loads(contenido)
 
         # El modelo puede devolver {"preguntas": [...]} o directamente [...]
@@ -382,7 +386,7 @@ def generar_preguntas_partido(id_partido, conn):
         return preguntas
 
     except Exception as e:
-        print(f"  ✗ Error al llamar a OpenAI: {e}")
+        print(f"  ✗ Error al llamar a Gemini: {e}")
         return []
 
 
@@ -528,8 +532,6 @@ def ejecutar_cron_diario():
         conn.close()
 
     print(f"=== CRON finalizado: {datetime.now()} ===")
-
-
 if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
