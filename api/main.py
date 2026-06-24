@@ -13,7 +13,7 @@ DB_USER = "postgres.vlndghikrjvxmiibbqbo"
 DB_PASS = "Lif#Cari.Fuk"
 DB_PORT = "6543"
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY_")   # ← tu clave de Gemini (gratis en aistudio.google.com)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # ← tu clave de Gemini (gratis en aistudio.google.com)
 GEMINI_MODEL   = "gemini-1.5-flash"  # rápido y gratuito
 
 HEADERS = {
