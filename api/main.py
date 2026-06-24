@@ -236,6 +236,10 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                 texto_evento
             ))
 
+        
+        cursor.execute('''DELETE FROM RESPUESTAS_PREGUNTAS''')
+        cursor.execute('''DELETE FROM PREGUNTAS_PARTIDO''')
+    
         conn.commit()
         cursor.close()
         print(f"  ✓ {local.get('team',{}).get('name')} vs {visitante.get('team',{}).get('name')}")
@@ -326,7 +330,7 @@ def _construir_contexto_partido(id_partido, conn):
 def generar_preguntas_partido(id_partido, conn):
     """
     Llama a OpenAI con el contexto del partido y genera 20 preguntas
-    de opción múltiple (4 opciones cada una, una correcta).
+    de opción múltiple (4 opciones cada una, una correcta). Por favor no hagas preguntas que indiquen minutos en el que ocurrio un evento.
     Devuelve una lista de dicts con el formato:
       [{ "pregunta": str, "opciones": [{"letra": "A", "texto": str, "correcta": bool}, ...] }]
     o lista vacía si hay error.
