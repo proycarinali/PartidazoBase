@@ -507,7 +507,63 @@ def obtener_preguntas_partido(id_partido, conn):
         })
 
     return list(preguntas_dict.values())
+def get_id_partido_por_nombre(partido_nombre, conn):
+    """
+    Busca el id_partido basándose en el nombre descriptivo del partido.
+    Intenta separar los nombres si contienen 'vs' o ' - ' para buscar a ambos equipos.
+    Devuelve el id_partido (str) si lo encuentra, o None si no hay coincidencias.
+    """
+    if not partido_nombre:
+        return None
 
+    cursor = conn.cursor()
+    
+    # 1. Intento de búsqueda directa por coincidencia parcial de todo el texto
+    try:
+        query_directa = """
+            SELECT id_partido FROM partidos 
+            WHERE equipo_local_nombre ILIKE %s 
+               OR equipo_visitante_nombre ILIKE %s
+            LIMIT 1;
+        """
+        param = f"%{partido_nombre.strip()}%"
+        cursor.execute(query_directa, (param, param))
+        fila = cursor.fetchone()
+        if fila:
+            cursor.close()
+            return fila[0]
+
+        # 2. Si no funcionó, separamos por los separadores comunes 'vs' o '-' 
+        separadores = [" vs ", " - ", " vs. "]
+        partes = []
+        for sep in separadores:
+            if sep in partido_nombre.lower():
+                partes = partido_nombre.lower().split(sep)
+                break
+        
+        if len(partes) >= 2:
+            eq1 = partes[0].strip()
+            eq2 = partes[1].strip()
+
+            # Buscamos que un equipo sea local y el otro visitante (o viceversa)
+            query_combinada = """
+                SELECT id_partido FROM partidos 
+                WHERE (equipo_local_nombre ILIKE %s AND equipo_visitante_nombre ILIKE %s)
+                   OR (equipo_local_nombre ILIKE %s AND equipo_visitante_nombre ILIKE %s)
+                LIMIT 1;
+            """
+            cursor.execute(query_combinada, (f"%{eq1}%", f"%{eq2}%", f"%{eq2}%", f"%{eq1}%"))
+            fila = cursor.fetchone()
+            if fila:
+                cursor.close()
+                return fila[0]
+
+    except Exception as e:
+        print(f"Error en get_id_partido_por_nombre: {e}")
+    finally:
+        cursor.close()
+
+    return None
 
 # ──────────────────────────────────────────────
 # CRON PRINCIPAL
