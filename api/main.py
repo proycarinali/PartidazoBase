@@ -14,7 +14,7 @@ DB_PASS = "Lif#Cari.Fuk"
 DB_PORT = "6543"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # ← tu clave de Gemini (gratis en aistudio.google.com)
-GEMINI_MODEL   = "gemini-2.0-flash"  # rápido y gratuito
+GEMINI_MODEL   = "gemini-flash-lite-latest"  # rápido y gratuito
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
