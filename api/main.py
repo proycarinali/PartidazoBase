@@ -3,12 +3,17 @@ import psycopg2
 from psycopg2 import extras
 from datetime import datetime, timedelta
 import time
+import json
+import uuid
 
 DB_HOST = "aws-1-us-east-2.pooler.supabase.com"
 DB_NAME = "postgres"
 DB_USER = "postgres.vlndghikrjvxmiibbqbo"
 DB_PASS = "Lif#Cari.Fuk"
 DB_PORT = "6543"
+
+OPENAI_API_KEY = ""          # ← completar con tu clave de OpenAI
+OPENAI_MODEL   = "gpt-4o"   # podés cambiarlo por "gpt-4-turbo" o "gpt-3.5-turbo"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -22,7 +27,7 @@ def conectar_supabase():
     return psycopg2.connect(
         host=DB_HOST, database=DB_NAME,
         user=DB_USER, password=DB_PASS, port=DB_PORT,
-        connect_timeout=10  # ✅ timeout en la conexión también
+        connect_timeout=10
     )
 
 def iniciar_tablas_supabase(conn):
@@ -84,7 +89,7 @@ def iniciar_tablas_supabase(conn):
 def obtener_partidos_dia_anterior():
     ayer = datetime.now() - timedelta(days=1)
     fecha_str = ayer.strftime("%Y%m%d")
-    
+
     print(f"Consultando partidos del {fecha_str}...")
     try:
         respuesta = requests.get(
@@ -170,8 +175,6 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                     j.get('starter', True)
                 ))
 
-        # Mapa de type.type de ESPN → categoría normalizada que guardamos
-        # Ignoramos kickoff, halftime, start-2nd-half, end-regular-time (sin participants)
         TIPO_MAP = {
             'goal':               'Gol',
             'own-goal':           'Gol en Propia',
@@ -186,23 +189,18 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
 
         for evento in datos.get('keyEvents', []):
             tipo_type = evento.get('type', {}).get('type', '').lower()
-
-            # Solo procesamos tipos que están en nuestro mapa
             if tipo_type not in TIPO_MAP:
                 continue
 
-            # Si no hay participants, no hay jugador — igual insertamos el evento
             participantes = evento.get('participants', [])
             if not participantes:
                 continue
 
             id_ev = evento.get('id', f"{id_partido}_{time.time_ns()}")
 
-            # Minuto desde displayValue: "6'" → 6, "45+2'" → 45
             clock_display = evento.get('clock', {}).get('displayValue', '0')
             minuto = int(''.join(filter(str.isdigit, clock_display.split('+')[0].split(':')[0])) or 0)
 
-            # Periodo
             periodo_num = evento.get('period', {}).get('number', 1)
             if periodo_num <= 2:
                 periodo = f"P{periodo_num}"
@@ -217,8 +215,6 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
             tipo_limpio    = TIPO_MAP[tipo_type]
             texto_evento   = evento.get('text', '')
 
-            # participants[0] = actor principal (goleador, amonestado, sale en sust.)
-            # participants[1] = secundario (asistente en gol, entra en sust.)
             atleta_0 = participantes[0].get('athlete', {})
             atleta_1 = participantes[1].get('athlete', {}) if len(participantes) > 1 else {}
 
@@ -231,10 +227,10 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                 ON CONFLICT (id_evento) DO NOTHING;
             ''', (
                 id_ev, id_partido, id_equipo,
-                atleta_0.get('id'),          # goleador / amonestado / sale
+                atleta_0.get('id'),
                 atleta_0.get('displayName'),
                 tipo_limpio, minuto, periodo,
-                atleta_1.get('id') or None,          # asistente / entra (None si no hay)
+                atleta_1.get('id') or None,
                 atleta_1.get('displayName') or None,
                 texto_evento
             ))
@@ -245,25 +241,303 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
 
     except Exception as e:
         print(f"  ✗ Error en partido {id_partido}: {e}")
-        conn.rollback()  # ✅ evita dejar la transacción rota
+        conn.rollback()
+
+# ──────────────────────────────────────────────
+# NUEVAS FUNCIONES: TRIVIA CON IA
+# ──────────────────────────────────────────────
+
+def _construir_contexto_partido(id_partido, conn):
+    """
+    Arma un texto resumido del partido leyendo las tablas ya cargadas.
+    Devuelve un dict con los datos del partido, o None si no existe.
+    """
+    cursor = conn.cursor()
+
+    # Datos generales del partido
+    cursor.execute('''
+        SELECT id_partido, fecha_partido, liga_nombre,
+               equipo_local_nombre, equipo_local_goles,
+               equipo_visitante_nombre, equipo_visitante_goles,
+               ganador, tanda_penales
+        FROM partidos WHERE id_partido = %s;
+    ''', (id_partido,))
+    fila = cursor.fetchone()
+    if not fila:
+        cursor.close()
+        return None
+
+    (id_p, fecha, liga, loc_nombre, loc_goles,
+     vis_nombre, vis_goles, ganador, penales) = fila
+
+    # Eventos del partido
+    cursor.execute('''
+        SELECT tipo_evento, minuto, periodo, nombre_jugador, nombre_asistente, texto_evento
+        FROM eventos_partido
+        WHERE id_partido = %s
+        ORDER BY minuto;
+    ''', (id_partido,))
+    eventos = cursor.fetchall()
+
+    # Titulares de cada equipo
+    cursor.execute('''
+        SELECT jp.nombre_jugador, jp.posicion, p.equipo_local_nombre,
+               p.equipo_visitante_nombre,
+               CASE WHEN jp.id_equipo = p.equipo_local_id THEN 'local' ELSE 'visitante' END AS bando
+        FROM jugadores_partido jp
+        JOIN partidos p ON p.id_partido = jp.id_partido
+        WHERE jp.id_partido = %s AND jp.titular = TRUE;
+    ''', (id_partido,))
+    jugadores = cursor.fetchall()
+    cursor.close()
+
+    # Armar texto de contexto
+    lineas = [
+        f"Partido: {loc_nombre} {loc_goles} - {vis_goles} {vis_nombre}",
+        f"Liga: {liga}",
+        f"Fecha: {fecha}",
+        f"Resultado: {ganador}" + (" (definido por penales)" if penales else ""),
+        "",
+        "EVENTOS CLAVE:",
+    ]
+    for (tipo, minuto, periodo, jugador, asistente, texto) in eventos:
+        desc = f"  Min {minuto} ({periodo}) - {tipo}: {jugador or '?'}"
+        if asistente:
+            desc += f" (asistencia: {asistente})"
+        if texto:
+            desc += f" — {texto}"
+        lineas.append(desc)
+
+    lineas.append("")
+    lineas.append("TITULARES:")
+    for (nombre, posicion, loc_eq, vis_eq, bando) in jugadores:
+        eq = loc_nombre if bando == 'local' else vis_nombre
+        lineas.append(f"  [{eq}] {nombre} - {posicion or 'N/D'}")
+
+    return {
+        "id_partido": id_p,
+        "loc_nombre": loc_nombre,
+        "vis_nombre": vis_nombre,
+        "contexto_texto": "\n".join(lineas),
+    }
+
+
+def generar_preguntas_partido(id_partido, conn):
+    """
+    Llama a OpenAI con el contexto del partido y genera 20 preguntas
+    de opción múltiple (4 opciones cada una, una correcta).
+    Devuelve una lista de dicts con el formato:
+      [{ "pregunta": str, "opciones": [{"letra": "A", "texto": str, "correcta": bool}, ...] }]
+    o lista vacía si hay error.
+    """
+    contexto = _construir_contexto_partido(id_partido, conn)
+    if not contexto:
+        print(f"  ✗ No se encontró el partido {id_partido} en la BD para generar preguntas.")
+        return []
+
+    print(f"  Generando preguntas para {contexto['loc_nombre']} vs {contexto['vis_nombre']}...")
+
+    prompt_sistema = (
+        "Sos un experto en fútbol que crea preguntas de trivia sobre partidos. "
+        "Respondés siempre en JSON puro, sin markdown, sin bloques de código. "
+        "El JSON debe ser un array de exactamente 20 objetos. "
+        "Cada objeto tiene esta estructura:\n"
+        '{"pregunta": "...", "opciones": ['
+        '{"letra": "A", "texto": "...", "correcta": false},'
+        '{"letra": "B", "texto": "...", "correcta": false},'
+        '{"letra": "C", "texto": "...", "correcta": true},'
+        '{"letra": "D", "texto": "...", "correcta": false}'
+        "]}\n"
+        "Exactamente una opción por pregunta debe tener correcta=true. "
+        "Las preguntas deben ser variadas: goles, asistencias, tarjetas, "
+        "minutos de gol, titulares, resultado final, estadísticas, etc. "
+        "Usá solo información del contexto provisto; no inventes datos."
+    )
+
+    prompt_usuario = (
+        f"Generá 20 preguntas de trivia sobre este partido:\n\n"
+        f"{contexto['contexto_texto']}"
+    )
+
+    try:
+        respuesta = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OPENAI_MODEL,
+                "messages": [
+                    {"role": "system", "content": prompt_sistema},
+                    {"role": "user",   "content": prompt_usuario},
+                ],
+                "temperature": 0.7,
+                "max_tokens": 4000,
+            },
+            timeout=60,
+        )
+        respuesta.raise_for_status()
+        contenido = respuesta.json()["choices"][0]["message"]["content"].strip()
+
+        # Limpiar posibles fences de markdown que el modelo pueda colar igual
+        if contenido.startswith("```"):
+            contenido = contenido.split("```")[1]
+            if contenido.startswith("json"):
+                contenido = contenido[4:]
+
+        preguntas = json.loads(contenido)
+        print(f"  ✓ {len(preguntas)} preguntas generadas.")
+        return preguntas
+
+    except Exception as e:
+        print(f"  ✗ Error al llamar a OpenAI: {e}")
+        return []
+
+
+def guardar_preguntas_en_bd(id_partido, preguntas, conn):
+    """
+    Guarda la lista de preguntas (y sus opciones) en las tablas
+    preguntas_partido y respuestas_preguntas.
+    Usa ON CONFLICT DO NOTHING para idempotencia.
+    """
+    if not preguntas:
+        return
+
+    cursor = conn.cursor()
+    try:
+        for nro, item in enumerate(preguntas, start=1):
+            id_pregunta = f"{id_partido}_{nro:02d}"
+            cursor.execute('''
+                INSERT INTO preguntas_partido (id_pregunta, id_partido, nro_pregunta, pregunta)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (id_pregunta) DO NOTHING;
+            ''', (id_pregunta, id_partido, nro, item.get("pregunta", "")))
+
+            for opcion in item.get("opciones", []):
+                letra      = opcion.get("letra", "A")
+                id_resp    = f"{id_pregunta}_{letra}"
+                cursor.execute('''
+                    INSERT INTO respuestas_preguntas
+                        (id_respuesta, id_pregunta, letra, texto_opcion, es_correcta)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (id_respuesta) DO NOTHING;
+                ''', (
+                    id_resp, id_pregunta, letra,
+                    opcion.get("texto", ""),
+                    opcion.get("correcta", False),
+                ))
+
+        conn.commit()
+        print(f"  ✓ Preguntas guardadas en BD para partido {id_partido}.")
+    except Exception as e:
+        conn.rollback()
+        print(f"  ✗ Error al guardar preguntas en BD: {e}")
+    finally:
+        cursor.close()
+
+
+def generar_y_guardar_trivia_partido(id_partido, conn):
+    """
+    Orquesta la generación y persistencia de trivia para un partido.
+    Verifica si ya existen preguntas para evitar regenerarlas.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM preguntas_partido WHERE id_partido = %s;",
+        (id_partido,)
+    )
+    (cantidad,) = cursor.fetchone()
+    cursor.close()
+
+    if cantidad >= 20:
+        print(f"  ℹ Partido {id_partido} ya tiene {cantidad} preguntas, se omite.")
+        return
+
+    preguntas = generar_preguntas_partido(id_partido, conn)
+    guardar_preguntas_en_bd(id_partido, preguntas, conn)
+
+
+def obtener_preguntas_partido(id_partido, conn):
+    """
+    Devuelve todas las preguntas con sus opciones para un partido dado.
+    Formato de retorno:
+    [
+      {
+        "id_pregunta": str,
+        "nro_pregunta": int,
+        "pregunta": str,
+        "opciones": [
+          {"id_respuesta": str, "letra": str, "texto": str, "es_correcta": bool},
+          ...
+        ]
+      },
+      ...
+    ]
+    Devuelve lista vacía si el partido no tiene preguntas cargadas.
+    """
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT p.id_pregunta, p.nro_pregunta, p.pregunta,
+               r.id_respuesta, r.letra, r.texto_opcion, r.es_correcta
+        FROM preguntas_partido p
+        JOIN respuestas_preguntas r ON r.id_pregunta = p.id_pregunta
+        WHERE p.id_partido = %s
+        ORDER BY p.nro_pregunta, r.letra;
+    ''', (id_partido,))
+    filas = cursor.fetchall()
+    cursor.close()
+
+    # Agrupar por pregunta
+    preguntas_dict = {}
+    for (id_preg, nro, texto_preg, id_resp, letra, texto_op, correcta) in filas:
+        if id_preg not in preguntas_dict:
+            preguntas_dict[id_preg] = {
+                "id_pregunta": id_preg,
+                "nro_pregunta": nro,
+                "pregunta": texto_preg,
+                "opciones": [],
+            }
+        preguntas_dict[id_preg]["opciones"].append({
+            "id_respuesta": id_resp,
+            "letra": letra,
+            "texto": texto_op,
+            "es_correcta": correcta,
+        })
+
+    return list(preguntas_dict.values())
+
+
+# ──────────────────────────────────────────────
+# CRON PRINCIPAL
+# ──────────────────────────────────────────────
 
 def ejecutar_cron_diario():
     print(f"=== CRON iniciado: {datetime.now()} ===")
-    
-    # ✅ Una sola conexión para todo el proceso
+
     conn = conectar_supabase()
     try:
         iniciar_tablas_supabase(conn)
         partidos = obtener_partidos_dia_anterior()
         print(f"Procesando {len(partidos)} partidos...")
+
         for i, id_p in enumerate(partidos, 1):
             print(f"[{i}/{len(partidos)}]", end=" ")
             procesar_y_guardar_en_supabase(id_p, conn)
             time.sleep(2)
+
+        # ── Generación de trivia ──
+        print("\n--- Generando trivia con IA ---")
+        for i, id_p in enumerate(partidos, 1):
+            print(f"[{i}/{len(partidos)}]", end=" ")
+            generar_y_guardar_trivia_partido(id_p, conn)
+            time.sleep(3)   # pausa para no saturar la API de OpenAI
+
     finally:
-        conn.close()  # ✅ siempre cierra aunque falle
-    
+        conn.close()
+
     print(f"=== CRON finalizado: {datetime.now()} ===")
+
 
 if __name__ == "__main__":
     ejecutar_cron_diario()
