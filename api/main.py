@@ -14,7 +14,7 @@ DB_PASS = "Lif#Cari.Fuk"
 DB_PORT = "6543"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")        # ← completar con tu clave de OpenAI
-OPENAI_MODEL   = "gpt-4o"   # podés cambiarlo por "gpt-4-turbo" o "gpt-3.5-turbo"
+OPENAI_MODEL   = "gpt-4o-mini"   # podés cambiarlo por "gpt-4-turbo" o "gpt-3.5-turbo"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -361,33 +361,22 @@ def generar_preguntas_partido(id_partido, conn):
     )
 
     try:
-        respuesta = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": OPENAI_MODEL,
-                "messages": [
-                    {"role": "system", "content": prompt_sistema},
-                    {"role": "user",   "content": prompt_usuario},
-                ],
-                "temperature": 0.7,
-                "max_tokens": 4000,
-            },
-            timeout=60,
+        openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        respuesta = openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": prompt_sistema},
+                {"role": "user",   "content": prompt_usuario},
+            ],
+            max_tokens=2500,
         )
-        respuesta.raise_for_status()
-        contenido = respuesta.json()["choices"][0]["message"]["content"].strip()
+        contenido = respuesta.choices[0].message.content.strip()
+        datos = json.loads(contenido)
 
-        # Limpiar posibles fences de markdown que el modelo pueda colar igual
-        if contenido.startswith("```"):
-            contenido = contenido.split("```")[1]
-            if contenido.startswith("json"):
-                contenido = contenido[4:]
+        # El modelo puede devolver {"preguntas": [...]} o directamente [...]
+        preguntas = datos if isinstance(datos, list) else datos.get("preguntas", list(datos.values())[0])
 
-        preguntas = json.loads(contenido)
         print(f"  ✓ {len(preguntas)} preguntas generadas.")
         return preguntas
 
