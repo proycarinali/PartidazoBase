@@ -12,7 +12,7 @@ DB_USER = "postgres.vlndghikrjvxmiibbqbo"
 DB_PASS = "Lif#Cari.Fuk"
 DB_PORT = "6543"
 
-OPENAI_API_KEY = ""          # ← completar con tu clave de OpenAI
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")        # ← completar con tu clave de OpenAI
 OPENAI_MODEL   = "gpt-4o"   # podés cambiarlo por "gpt-4-turbo" o "gpt-3.5-turbo"
 
 HEADERS = {
