@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import time
 import json
 import uuid
+import os
 
 DB_HOST = "aws-1-us-east-2.pooler.supabase.com"
 DB_NAME = "postgres"
