@@ -330,7 +330,7 @@ def _construir_contexto_partido(id_partido, conn):
 def generar_preguntas_partido(id_partido, conn):
     """
     Llama a OpenAI con el contexto del partido y genera 20 preguntas
-    de opción múltiple (4 opciones cada una, una correcta). Por favor no hagas preguntas que indiquen minutos en el que ocurrio un evento.
+    de opción múltiple (4 opciones cada una, una correcta). 
     Devuelve una lista de dicts con el formato:
       [{ "pregunta": str, "opciones": [{"letra": "A", "texto": str, "correcta": bool}, ...] }]
     o lista vacía si hay error.
@@ -345,6 +345,7 @@ def generar_preguntas_partido(id_partido, conn):
     prompt_sistema = (
         "Sos un experto en fútbol que crea preguntas de trivia sobre partidos. "
         "Respondés siempre en JSON puro, sin markdown, sin bloques de código. "
+        "Por favor no hagas preguntas que indiquen minutos en el que ocurrio un evento, si puede ser al estilo primer timpo."
         "El JSON debe ser un array de exactamente 20 objetos. "
         "Cada objeto tiene esta estructura:\n"
         '{"pregunta": "...", "opciones": ['
