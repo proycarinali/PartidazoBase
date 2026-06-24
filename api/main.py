@@ -530,4 +530,26 @@ def ejecutar_cron_diario():
 
 
 if __name__ == "__main__":
-    ejecutar_cron_diario()
+    import sys
+    args = sys.argv[1:]
+
+    if args and args[0] == "test-trivia":
+        # Uso: python main.py test-trivia <id_partido>
+        id_test = args[1] if len(args) > 1 else None
+        if not id_test:
+            print("Indicá el id_partido: python main.py test-trivia <id_partido>")
+            sys.exit(1)
+        conn = conectar_supabase()
+        try:
+            preguntas = generar_preguntas_partido(id_test, conn)
+            if preguntas:
+                print(f"\n{len(preguntas)} preguntas generadas:")
+                for i, p in enumerate(preguntas, 1):
+                    print(f"\n{i}. {p['pregunta']}")
+                    for op in p['opciones']:
+                        correcta = " (correcta)" if op['correcta'] else ""
+                        print(f"   {op['letra']}) {op['texto']}{correcta}")
+        finally:
+            conn.close()
+    else:
+        ejecutar_cron_diario()
