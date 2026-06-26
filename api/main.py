@@ -616,7 +616,7 @@ def api_regenerar_trivia():
 
     conn = conectar_supabase()
     try:
-        iniciar_tablas_supabase(conn)
+    
         partidos = obtener_partidos_dia_anterior()
         
         if not partidos:
