@@ -86,7 +86,52 @@ def iniciar_tablas_supabase(conn):
     conn.commit()
     cursor.close()
     print("✓ Tablas verificadas.")
+    
+def obtener_partidos_ultimas_6_horas():
+    ahora = datetime.now(timezone.utc)
+    hace_6_horas = ahora - timedelta(hours=6)
+    fecha_str = ahora.strftime("%Y%m%d")
 
+    print(f"Consultando partidos finalizados en las últimas 6 horas...")
+    try:
+        respuesta = requests.get(
+            ESPN_SCOREBOARD,
+            params={"dates": fecha_str},
+            headers=HEADERS,
+            timeout=15
+        )
+        print(f"  ESPN scoreboard status: {respuesta.status_code}")
+        if respuesta.status_code != 200:
+            return []
+
+        datos = respuesta.json()
+        ids = []
+        for evento in datos.get('events', []):
+            estado = evento.get('status', {})
+            tipo = estado.get('type', {})
+
+            # Solo partidos finalizados
+            if not tipo.get('completed', False):
+                continue
+
+            # Verificar que finalizó dentro de las últimas 6 horas
+            fecha_fin_str = tipo.get('detail') or estado.get('displayClock')
+            # ESPN guarda la fecha del evento en 'date'
+            fecha_evento_str = evento.get('date', '')
+            try:
+                fecha_evento = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
+                if fecha_evento >= hace_6_horas:
+                    ids.append(evento.get('id'))
+            except Exception:
+                # Si no se puede parsear la fecha, lo incluimos igual
+                ids.append(evento.get('id'))
+
+        print(f"  Encontrados {len(ids)} partidos finalizados en las últimas 6 horas.")
+        return ids
+    except Exception as e:
+        print(f"Error al obtener agenda: {e}")
+        return []
+        
 def obtener_partidos_dia_anterior():
     ayer = datetime.now() - timedelta(days=1)
     fecha_str = ayer.strftime("%Y%m%d")
