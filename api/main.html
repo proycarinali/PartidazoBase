@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Administración</title>
+    <style>
+        body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f4f4f9; margin: 0; }
+        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 100%; }
+        input[type="password"] { width: 90%; padding: 10px; margin-bottom: 20px; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; text-align: center; }
+        button { background-color: #007BFF; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; transition: background 0.3s; width: 100%; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #status-message { margin-top: 15px; font-weight: bold; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Panel de Trivias</h2>
+    <p>Ingresa tu clave de acceso:</p>
+    
+    <input type="password" id="auth-token" placeholder="Clave de seguridad..." oninput="verificarInput()">
+    <button id="btn-regenerar" disabled onclick="solicitarRegeneracion()">Regenerar Trivias</button>
+    
+    <div id="status-message"></div>
+</div>
+
+<script>
+    const API_URL = "http://localhost:5000/regenerar-trivia";
+
+    function verificarInput() {
+        const token = document.getElementById('auth-token').value.trim();
+        const boton = document.getElementById('btn-regenerar');
+        // El botón solo requiere que el campo no esté vacío para permitir enviar
+        boton.disabled = (token.length === 0);
+    }
+
+    async function solicitarRegeneracion() {
+        const token = document.getElementById('auth-token').value.trim();
+        const statusMessage = document.getElementById('status-message');
+
+        statusMessage.style.color = "orange";
+        statusMessage.innerText = "Enviando solicitud cifrada al servidor...";
+
+        try {
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ usuario: token })
+            });
+
+            const resultado = await response.json();
+
+            if (response.ok) {
+                statusMessage.style.color = "green";
+                statusMessage.innerText = resultado.message;
+            } else {
+                statusMessage.style.color = "red";
+                statusMessage.innerText = `Error (${response.status}): ${resultado.message}`;
+            }
+        } catch (error) {
+            statusMessage.style.color = "red";
+            statusMessage.innerText = "Error: Servidor inaccesible.";
+        }
+    }
+</script>
+
+</body>
+</html>
