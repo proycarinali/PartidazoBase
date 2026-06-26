@@ -236,10 +236,6 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                 texto_evento
             ))
 
-        
-        cursor.execute('''DELETE FROM RESPUESTAS_PREGUNTAS''')
-        cursor.execute('''DELETE FROM PREGUNTAS_PARTIDO''')
-    
         conn.commit()
         cursor.close()
         print(f"  ✓ {local.get('team',{}).get('name')} vs {visitante.get('team',{}).get('name')}")
