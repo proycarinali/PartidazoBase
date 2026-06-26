@@ -616,7 +616,7 @@ def ejecutar_cron_diario():
     conn = conectar_supabase()
     try:
         iniciar_tablas_supabase(conn)
-        partidos = obtener_partidos_dia_anterior()
+        partidos = obtener_partidos_ultimas_6_horas()
         print(f"Procesando {len(partidos)} partidos...")
 
         for i, id_p in enumerate(partidos, 1):
