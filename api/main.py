@@ -482,20 +482,6 @@ def generar_y_guardar_trivia_partido(id_partido, conn):
 def obtener_preguntas_partido(id_partido, conn):
     """
     Devuelve todas las preguntas con sus opciones para un partido dado.
-    Formato de retorno:
-    [
-      {
-        "id_pregunta": str,
-        "nro_pregunta": int,
-        "pregunta": str,
-        "opciones": [
-          {"id_respuesta": str, "letra": str, "texto": str, "es_correcta": bool},
-          ...
-        ]
-      },
-      ...
-    ]
-    Devuelve lista vacía si el partido no tiene preguntas cargadas.
     """
     cursor = conn.cursor()
     cursor.execute('''
@@ -527,18 +513,15 @@ def obtener_preguntas_partido(id_partido, conn):
         })
 
     return list(preguntas_dict.values())
+
 def get_id_partido_por_nombre(partido_nombre, conn):
     """
     Busca el id_partido basándose en el nombre descriptivo del partido.
-    Intenta separar los nombres si contienen 'vs' o ' - ' para buscar a ambos equipos.
-    Devuelve el id_partido (str) si lo encuentra, o None si no hay coincidencias.
     """
     if not partido_nombre:
         return None
 
     cursor = conn.cursor()
-    
-    # 1. Intento de búsqueda directa por coincidencia parcial de todo el texto
     try:
         query_directa = """
             SELECT id_partido FROM partidos 
@@ -553,7 +536,6 @@ def get_id_partido_por_nombre(partido_nombre, conn):
             cursor.close()
             return fila[0]
 
-        # 2. Si no funcionó, separamos por los separadores comunes 'vs' o '-' 
         separadores = [" vs ", " - ", " vs. "]
         partes = []
         for sep in separadores:
@@ -565,7 +547,6 @@ def get_id_partido_por_nombre(partido_nombre, conn):
             eq1 = partes[0].strip()
             eq2 = partes[1].strip()
 
-            # Buscamos que un equipo sea local y el otro visitante (o viceversa)
             query_combinada = """
                 SELECT id_partido FROM partidos 
                 WHERE (equipo_local_nombre ILIKE %s AND equipo_visitante_nombre ILIKE %s)
@@ -625,11 +606,11 @@ def _verificar_token(datos):
 
 def _procesar_partidos(conn):
     """
-    Lógica compartida entre el cron y los endpoints manuales:
+    Lógica compartida dinámica y robusta:
     1. Obtiene la fecha máxima guardada en la BD para filtrar a partir de ayer.
-    2. Consulta ESPN Scoreboard para el día de ayer y hoy.
+    2. Consulta ESPN Scoreboard para ayer y hoy.
     3. Guarda nuevos partidos.
-    4. SINO tiene preguntas previas, genera nueva trivia con la IA (evita duplicar/gastar tokens).
+    4. SINO tiene preguntas previas, genera nueva trivia (evita duplicar/gastar tokens).
     """
     ultima_fecha_str = obtener_ultima_fecha_partido(conn)
     ultima_fecha = None
@@ -647,7 +628,6 @@ def _procesar_partidos(conn):
     if not ultima_fecha:
         ultima_fecha = datetime.now(timezone.utc) - timedelta(days=1)
     
-    # Nos aseguramos de revisar siempre desde el día de ayer y hoy
     ahora = datetime.now(timezone.utc)
     ayer = ahora - timedelta(days=1)
     fechas_a_revisar = list({ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")})
@@ -673,7 +653,6 @@ def _procesar_partidos(conn):
                 fecha_evento_str = evento.get('date', '')
                 try:
                     fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
-                    # Filtrado por fecha y hora exactas
                     if fecha_inicio > ultima_fecha:
                         if id_evento not in partidos_candidatos:
                             partidos_candidatos.append(id_evento)
@@ -702,7 +681,7 @@ def _procesar_partidos(conn):
                 print(f"  ℹ El partido {id_p} ya tiene {cantidad_preguntas} preguntas registradas. Se omite el llamado a la IA.")
                 continue
                 
-            # 3. Si no tiene preguntas, se invoca a Gemini de forma segura
+            # 3. FIX CRÍTICO: Si no tiene preguntas, se invoca a Gemini pasándole los parámetros correctos
             preguntas = generar_preguntas_partido(id_p, conn)
             guardar_preguntas_en_bd(id_p, preguntas, conn)
             
@@ -735,7 +714,7 @@ def api_regenerar_trivia():
         return jsonify({
             "status": "success",
             "message": f"Proceso completado. Se evaluaron {len(partidos)} partidos sin destruir trivias existentes.",
-            "partidos_procesados": partidos,
+            "partidos_processed": partidos,
         }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -746,13 +725,8 @@ def api_regenerar_trivia():
 @app.route('/actualizar-db', methods=['POST'])
 def api_actualizar_db():
     """
-    Endpoint de actualización manual completa.
-    Igual que el cron: obtiene partidos, guarda datos y genera trivia de los que no la posean.
-
-    Uso:
-        POST /actualizar-db
-        Content-Type: application/json
-        { "usuario": "<ADMIN_TOKEN>" }
+    Endpoint de actualización manual de rango completo.
+    Busca partidos recientes, guarda datos básicos y genera trivia de los que falten.
     """
     datos = request.get_json() or {}
 
@@ -767,18 +741,71 @@ def api_actualizar_db():
             return jsonify({
                 "status": "ok",
                 "message": "No hay partidos nuevos para procesar.",
-                "partidos_processed": [],
+                "partidos_procesados": [],
             }), 200
 
         return jsonify({
             "status": "success",
-            "message": f"Base de datos actualizada: {len(partidos)} partido(s) procesados y trivia evaluada.",
+            "message": f"Base de datos actualizada manualmente: {len(partidos)} partido(s) evaluados.",
             "partidos_procesados": partidos,
         }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         conn.close()
+
+
+@app.route('/cargar-partido-manual', methods=['POST'])
+def api_cargar_partido_manual():
+    """
+    🚀 NUEVO ENDPOINT: Permite forzar la carga e inteligencia de un solo partido 
+    proveyendo su ID específico de ESPN. Respeta la regla de no borrar nada existente.
+    """
+    datos = request.get_json() or {}
+
+    if not _verificar_token(datos):
+        return jsonify({"status": "denied", "message": "Acceso prohibido."}), 403
+
+    id_partido = str(datos.get("id_partido") or "").strip()
+    if not id_partido:
+        return jsonify({"status": "error", "message": "Falta especificar el parámetro 'id_partido' en el cuerpo JSON."}), 400
+
+    conn = conectar_supabase()
+    try:
+        # 1. Guardar/actualizar información del partido
+        procesar_y_guardar_en_supabase(id_partido, conn)
+
+        # 2. Control preventivo de preguntas repetidas
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM preguntas_partido WHERE id_partido = %s;", (id_partido,))
+        (cantidad_preguntas,) = cursor.fetchone()
+        cursor.close()
+
+        ia_invocada = False
+        if cantidad_preguntas > 0:
+            msg_trivia = f"El partido ya poseía {cantidad_preguntas} preguntas. No se llamó a la IA para evitar duplicados."
+        else:
+            # 3. Generar únicamente si no existían preguntas previamente
+            preguntas = generar_preguntas_partido(id_partido, conn)
+            if preguntas:
+                guardar_preguntas_en_bd(id_partido, preguntas, conn)
+                ia_invocada = True
+                msg_trivia = "Trivia generada exitosamente con Gemini."
+            else:
+                msg_trivia = "No se pudieron generar preguntas para el partido."
+
+        return jsonify({
+            "status": "success",
+            "message": f"Partido {id_partido} procesado manualmente de forma exitosa.",
+            "trivia_status": msg_trivia,
+            "ia_invocada": ia_invocada
+        }), 200
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     import sys
@@ -787,7 +814,6 @@ if __name__ == "__main__":
     args = sys.argv[1:]
 
     if args and args[0] == "test-trivia":
-        # Uso: python main.py test-trivia <id_partido>
         id_test = args[1] if len(args) > 1 else None
         if not id_test:
             print("Indicá el id_partido: python main.py test-trivia <id_partido>")
@@ -831,7 +857,6 @@ if __name__ == "__main__":
             conn.close()
             print("=== PRUEBA FINALIZADA ===")
     else:
-        # Inicializar tablas al arrancar
         conn = conectar_supabase()
         conn.close()
 
@@ -841,5 +866,5 @@ if __name__ == "__main__":
         scheduler.start()
         print("✓ Cron programado cada 6 horas.")
 
-        # Levantar Flask (el cron corre en background)
+        # Levantar Flask
         app.run(host="0.0.0.0", port=5000)
