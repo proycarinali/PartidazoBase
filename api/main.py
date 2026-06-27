@@ -10,8 +10,8 @@ import os
 
 DB_HOST = "aws-1-us-east-2.pooler.supabase.com"
 DB_NAME = "postgres"
-DB_USER = "postgres.vlndghikrjvxmiibbqbo"
-DB_PASS = "Lif#Cari.Fuk"
+DB_USER =  os.environ.get("USER_BASE")
+DB_PASS = os.environ.get("CLAVE_BASE")
 DB_PORT = "6543"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # ← tu clave de Gemini (gratis en aistudio.google.com)
