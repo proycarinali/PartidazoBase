@@ -34,13 +34,19 @@ def conectar_supabase():
 
 def obtener_partidos_ultimas_6_horas():
     ahora = datetime.now(timezone.utc)
-    hace_8_horas = ahora - timedelta(hours=8)
+    # Ampliamos a 12 horas para tener un margen seguro y no perder partidos
+    hace_12_horas = ahora - timedelta(hours=12)
 
-    # Consultamos hoy y ayer para no perder partidos cuando el cron corre cerca de la medianoche
-    fechas = list({ahora.strftime("%Y%m%d"), (ahora - timedelta(days=1)).strftime("%Y%m%d"), (ahora - timedelta(days=2)).strftime("%Y%m%d")})
+    # Consultamos hoy, ayer y anteayer para evitar desfases por zonas horarias o medianoches
+    fechas = list({
+        ahora.strftime("%Y%m%d"), 
+        (ahora - timedelta(days=1)).strftime("%Y%m%d"), 
+        (ahora - timedelta(days=2)).strftime("%Y%m%d")
+    })
 
-    print(f"Consultando partidos finalizados en las últimas 8 horas ({', '.join(fechas)})...")
+    print(f"Consultando partidos finalizados en la ventana de tiempo para las fechas: {', '.join(fechas)}...")
     ids = []
+    
     try:
         for fecha_str in fechas:
             respuesta = requests.get(
@@ -49,31 +55,47 @@ def obtener_partidos_ultimas_6_horas():
                 headers=HEADERS,
                 timeout=15
             )
-            print(f"  ESPN scoreboard {fecha_str}: {respuesta.status_code}")
+            print(f"  ESPN scoreboard {fecha_str}: HTTP {respuesta.status_code}")
+            
             if respuesta.status_code != 200:
                 continue
 
-            for evento in respuesta.json().get('events', []):
+            datos_json = respuesta.json()
+            eventos = datos_json.get('events', [])
+            
+            for evento in eventos:
+                id_evento = evento.get('id')
                 estado = evento.get('status', {})
                 tipo = estado.get('type', {})
 
+                # 1. Filtro estricto: Solo partidos que ya terminaron
                 if not tipo.get('completed', False):
                     continue
 
+                # 2. Filtro de ventana de tiempo
                 fecha_evento_str = evento.get('date', '')
                 try:
+                    # Parsear la fecha en formato ISO (UTC)
                     fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
+                    # Estimamos que el partido dura aprox. 2 horas
                     fecha_fin_estimada = fecha_inicio + timedelta(hours=2)
-                    if fecha_fin_estimada >= hace_8_horas:
-                        ids.append(evento.get('id'))
+                    
+                    # Si el partido terminó dentro de las últimas 12 horas, lo agregamos
+                    if fecha_fin_estimada >= hace_12_horas:
+                        if id_evento not in ids:
+                            ids.append(id_evento)
                 except Exception:
-                    ids.append(evento.get('id'))
+                    # Si falla el parseo de la fecha, lo agregamos igual por seguridad si está 'completed'
+                    if id_evento not in ids:
+                        ids.append(id_evento)
 
-        print(f"  Encontrados {len(ids)} partidos finalizados en las últimas 8 horas.")
+        print(f"  -> Total de partidos encontrados y listos para procesar: {len(ids)}")
         return ids
+        
     except Exception as e:
-        print(f"Error al obtener agenda: {e}")
+        print(f"Error crítico al obtener agenda de ESPN: {e}")
         return []
+
         
 def obtener_partidos_dia_anterior():
     ayer = datetime.now() - timedelta(days=1)
@@ -623,7 +645,7 @@ def _procesar_partidos(conn):
         try:
             procesar_y_guardar_en_supabase(id_p, conn)
             _borrar_trivia_partido(id_p, conn)
-            preguntas = generar_preguntas_partido(id_p, conn)
+            preguntas = obtener_partidos_ultimas_6_horas(id_p, conn)
             guardar_preguntas_en_bd(id_p, preguntas, conn)
         except Exception as e:
             print(f"  ERROR procesando partido {id_p}: {e}")
