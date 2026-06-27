@@ -614,7 +614,7 @@ def _procesar_partidos(conn):
     3. Borra trivia anterior y regenera preguntas.
     Devuelve la lista de ids procesados.
     """
-    partidos = obtener_partidos_ultimas_6_horas()
+    partidos = obtener_partidos_dia_anterior()
 
     if not partidos:
         return []
