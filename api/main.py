@@ -59,13 +59,12 @@ def obtener_partidos_ultimas_6_horas():
             if not tipo.get('completed', False):
                 continue
  
-            # Verificar que finalizó dentro de las últimas 6 horas
-            fecha_fin_str = tipo.get('detail') or estado.get('displayClock')
-            # ESPN guarda la fecha del evento en 'date'
+            # ESPN guarda la fecha de INICIO en 'date'; estimamos fin sumando 2hs
             fecha_evento_str = evento.get('date', '')
             try:
-                fecha_evento = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
-                if fecha_evento >= hace_6_horas:
+                fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
+                fecha_fin_estimada = fecha_inicio + timedelta(hours=2)
+                if fecha_fin_estimada >= hace_6_horas:
                     ids.append(evento.get('id'))
             except Exception:
                 # Si no se puede parsear la fecha, lo incluimos igual
@@ -76,7 +75,7 @@ def obtener_partidos_ultimas_6_horas():
     except Exception as e:
         print(f"Error al obtener agenda: {e}")
         return []
-        
+     
 def obtener_partidos_dia_anterior():
     ayer = datetime.now() - timedelta(days=1)
     fecha_str = ayer.strftime("%Y%m%d")
