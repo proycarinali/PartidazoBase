@@ -654,7 +654,7 @@ def api_regenerar_trivia():
     # 🔒 SEGURIDAD MÁXIMA EN EL SERVIDOR:
     # Se compara contra una Variable de Entorno llamada ADMIN_TOKEN. 
     # Si no está configurada, por defecto requerirá "carinal1712".
-    token_esperado = os.environ.get("ADMIN_TOKEN", "carinal1712")
+    #token_esperado = os.environ.get("ADMIN_TOKEN", "carinal1712")
 
     if usuario != token_esperado:
         return jsonify({"status": "denied", "message": "Acceso prohibido."}), 403
@@ -662,19 +662,13 @@ def api_regenerar_trivia():
     conn = conectar_supabase()
     try:
     
-        partidos = obtener_partidos_dia_anterior()
+        partidos = obtener_partidos_ultimas_6_horas()
         
         if not partidos:
             return jsonify({"status": "error", "message": "No se encontraron partidos nuevos el día de hoy."}), 404
 
         for id_p in partidos:
             procesar_y_guardar_en_supabase(id_p, conn)
-            # Forzamos la recreación limpiando el contador interno
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM respuestas_preguntas WHERE id_pregunta LIKE %s;", (f"{id_p}%",))
-            cursor.execute("DELETE FROM preguntas_partido WHERE id_partido = %s;", (id_p,))
-            conn.commit()
-            cursor.close()
             
             # Genera de nuevo la trivia
             preguntas = generar_preguntas_partido(id_p, conn)
@@ -685,7 +679,6 @@ def api_regenerar_trivia():
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         conn.close()
-
 
 if __name__ == "__main__":
     import sys
@@ -709,9 +702,5 @@ if __name__ == "__main__":
                         print(f"   {op['letra']}) {op['texto']}{correcta}")
         finally:
             conn.close()
-    elif args and args[0] == "server":
-        # Ejecutar servidor para tu panel web usando: python main.py server
-        print("Iniciando API de control de Trivias...")
-        app.run(host="0.0.0.0", port=5000, debug=True)
     else:
         ejecutar_cron_diario()
