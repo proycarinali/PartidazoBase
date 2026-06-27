@@ -34,47 +34,46 @@ def conectar_supabase():
  
 def obtener_partidos_ultimas_6_horas():
     ahora = datetime.now(timezone.utc)
-    hace_6_horas = ahora - timedelta(hours=6)
-    fecha_str = ahora.strftime("%Y%m%d")
+    hace_8_horas = ahora - timedelta(hours=8)
  
-    print(f"Consultando partidos finalizados en las últimas 6 horas...")
+    # Consultamos hoy y ayer para no perder partidos cuando el cron corre cerca de la medianoche
+    fechas = list({ahora.strftime("%Y%m%d"), (ahora - timedelta(days=1)).strftime("%Y%m%d"), (ahora - timedelta(days=2)).strftime("%Y%m%d")})
+ 
+    print(f"Consultando partidos finalizados en las últimas 8 horas ({', '.join(fechas)})...")
+    ids = []
     try:
-        respuesta = requests.get(
-            ESPN_SCOREBOARD,
-            params={"dates": fecha_str},
-            headers=HEADERS,
-            timeout=15
-        )
-        print(f"  ESPN scoreboard status: {respuesta.status_code}")
-        if respuesta.status_code != 200:
-            return []
- 
-        datos = respuesta.json()
-        ids = []
-        for evento in datos.get('events', []):
-            estado = evento.get('status', {})
-            tipo = estado.get('type', {})
- 
-            # Solo partidos finalizados
-            if not tipo.get('completed', False):
+        for fecha_str in fechas:
+            respuesta = requests.get(
+                ESPN_SCOREBOARD,
+                params={"dates": fecha_str},
+                headers=HEADERS,
+                timeout=15
+            )
+            print(f"  ESPN scoreboard {fecha_str}: {respuesta.status_code}")
+            if respuesta.status_code != 200:
                 continue
  
-            # ESPN guarda la fecha de INICIO en 'date'; estimamos fin sumando 2hs
-            fecha_evento_str = evento.get('date', '')
-            try:
-                fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
-                fecha_fin_estimada = fecha_inicio + timedelta(hours=2)
-                if fecha_fin_estimada >= hace_6_horas:
-                    ids.append(evento.get('id'))
-            except Exception:
-                # Si no se puede parsear la fecha, lo incluimos igual
-                ids.append(evento.get('id'))
+            for evento in respuesta.json().get('events', []):
+                estado = evento.get('status', {})
+                tipo = estado.get('type', {})
  
-        print(f"  Encontrados {len(ids)} partidos finalizados en las últimas 6 horas.")
+                if not tipo.get('completed', False):
+                    continue
+ 
+                fecha_evento_str = evento.get('date', '')
+                try:
+                    fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
+                    fecha_fin_estimada = fecha_inicio + timedelta(hours=2)
+                    if fecha_fin_estimada >= hace_8_horas:
+                        ids.append(evento.get('id'))
+                except Exception:
+                    ids.append(evento.get('id'))
+ 
+        print(f"  Encontrados {len(ids)} partidos finalizados en las últimas 8 horas.")
         return ids
     except Exception as e:
         print(f"Error al obtener agenda: {e}")
-        return []
+        return []     
      
 def obtener_partidos_dia_anterior():
     ayer = datetime.now() - timedelta(days=1)
