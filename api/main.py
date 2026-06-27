@@ -32,6 +32,20 @@ def conectar_supabase():
         connect_timeout=10
     )
 
+def obtener_ultima_fecha_partido(conn):
+    """Consulta la fecha del último partido registrado en la base de datos."""
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT MAX(fecha_partido) FROM partidos;")
+        fila = cursor.fetchone()
+        if fila and fila[0]:
+            return fila[0]
+    except Exception as e:
+        print(f"Error al obtener última fecha de la BD: {e}")
+    finally:
+        cursor.close()
+    return None
+
 def obtener_partidos_ultimas_6_horas():
     ahora = datetime.now(timezone.utc)
     # Ampliamos a 12 horas para tener un margen seguro y no perder partidos
@@ -609,44 +623,89 @@ def _verificar_token(datos):
     return usuario == token_esperado
 
 
-def _borrar_trivia_partido(id_partido, conn):
-    """Elimina las preguntas y respuestas existentes de un partido para forzar regeneración."""
-    cursor = conn.cursor()
-    try:
-        # Las respuestas se eliminan en cascada si hay FK, pero borramos explícitamente
-        cursor.execute(
-            "DELETE FROM respuestas_preguntas WHERE id_pregunta IN "
-            "(SELECT id_pregunta FROM preguntas_partido WHERE id_partido = %s);",
-            (id_partido,)
-        )
-        cursor.execute(
-            "DELETE FROM preguntas_partido WHERE id_partido = %s;",
-            (id_partido,)
-        )
-        conn.commit()
-    finally:
-        cursor.close()
-
-
 def _procesar_partidos(conn):
     """
     Lógica compartida entre el cron y los endpoints manuales:
-    1. Obtiene partidos de las últimas 6 horas.
-    2. Guarda/actualiza datos de cada partido.
-    3. Borra trivia anterior y regenera preguntas.
-    Devuelve la lista de ids procesados.
+    1. Obtiene la fecha máxima guardada en la BD para filtrar a partir de ayer.
+    2. Consulta ESPN Scoreboard para el día de ayer y hoy.
+    3. Guarda nuevos partidos.
+    4. SINO tiene preguntas previas, genera nueva trivia con la IA (evita duplicar/gastar tokens).
     """
-    partidos = obtener_partidos_dia_anterior()
+    ultima_fecha_str = obtener_ultima_fecha_partido(conn)
+    ultima_fecha = None
+    
+    if ultima_fecha_str:
+        try:
+            if isinstance(ultima_fecha_str, datetime):
+                ultima_fecha = ultima_fecha_str.astimezone(timezone.utc)
+            else:
+                ultima_fecha = datetime.fromisoformat(ultima_fecha_str.replace('Z', '+00:00'))
+        except Exception:
+            pass
 
-    if not partidos:
+    # Si no hay registros previos, se calcula por defecto desde las últimas 24 horas
+    if not ultima_fecha:
+        ultima_fecha = datetime.now(timezone.utc) - timedelta(days=1)
+    
+    # Nos aseguramos de revisar siempre desde el día de ayer y hoy
+    ahora = datetime.now(timezone.utc)
+    ayer = ahora - timedelta(days=1)
+    fechas_a_revisar = list({ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")})
+    
+    print(f"Buscando partidos nuevos desde la fecha base: {ultima_fecha} en las fechas ESPN: {fechas_a_revisar}")
+    partidos_candidatos = []
+    
+    try:
+        for f_str in fechas_a_revisar:
+            resp = requests.get(ESPN_SCOREBOARD, params={"dates": f_str}, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                continue
+            
+            eventos = resp.json().get('events', [])
+            for evento in eventos:
+                id_evento = evento.get('id')
+                estado = evento.get('status', {})
+                tipo = estado.get('type', {})
+                
+                if not tipo.get('completed', False):
+                    continue
+                
+                fecha_evento_str = evento.get('date', '')
+                try:
+                    fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
+                    # Filtrado por fecha y hora exactas
+                    if fecha_inicio > ultima_fecha:
+                        if id_evento not in partidos_candidatos:
+                            partidos_candidatos.append(id_evento)
+                except Exception:
+                    if id_evento not in partidos_candidatos:
+                        partidos_candidatos.append(id_evento)
+    except Exception as e:
+        print(f"Error obteniendo agenda incremental: {e}")
         return []
 
-    for id_p in partidos:
+    if not partidos_candidatos:
+        print("No se encontraron nuevos partidos finalizados desde el último chequeo.")
+        return []
+
+    cursor = conn.cursor()
+    for id_p in partidos_candidatos:
         try:
+            # 1. Guardar o actualizar datos básicos del partido
             procesar_y_guardar_en_supabase(id_p, conn)
-            _borrar_trivia_partido(id_p, conn)
-            preguntas = obtener_partidos_ultimas_6_horas(id_p, conn)
+            
+            # 2. CONTROL DE TOKENS: Verificar si ya existen preguntas creadas para este partido
+            cursor.execute("SELECT COUNT(*) FROM preguntas_partido WHERE id_partido = %s;", (id_p,))
+            (cantidad_preguntas,) = cursor.fetchone()
+            
+            if cantidad_preguntas > 0:
+                print(f"  ℹ El partido {id_p} ya tiene {cantidad_preguntas} preguntas registradas. Se omite el llamado a la IA.")
+                continue
+                
+            # 3. Si no tiene preguntas, se invoca a Gemini de forma segura
+            preguntas = generar_preguntas_partido(id_p, conn)
             guardar_preguntas_en_bd(id_p, preguntas, conn)
+            
         except Exception as e:
             print(f"  ERROR procesando partido {id_p}: {e}")
             traceback.print_exc()
@@ -654,8 +713,9 @@ def _procesar_partidos(conn):
                 conn.rollback()
             except Exception:
                 pass
-
-    return partidos
+    
+    cursor.close()
+    return partidos_candidatos
 
 
 @app.route('/regenerar-trivia', methods=['POST'])
@@ -670,11 +730,11 @@ def api_regenerar_trivia():
         partidos = _procesar_partidos(conn)
 
         if not partidos:
-            return jsonify({"status": "error", "message": "No se encontraron partidos nuevos en las últimas 6 horas."}), 404
+            return jsonify({"status": "error", "message": "No se encontraron partidos nuevos para procesar."}), 404
 
         return jsonify({
             "status": "success",
-            "message": f"¡Trivias de {len(partidos)} partidos regeneradas correctamente!",
+            "message": f"Proceso completado. Se evaluaron {len(partidos)} partidos sin destruir trivias existentes.",
             "partidos_procesados": partidos,
         }), 200
     except Exception as e:
@@ -687,7 +747,7 @@ def api_regenerar_trivia():
 def api_actualizar_db():
     """
     Endpoint de actualización manual completa.
-    Igual que el cron: obtiene partidos, guarda datos y regenera trivia.
+    Igual que el cron: obtiene partidos, guarda datos y genera trivia de los que no la posean.
 
     Uso:
         POST /actualizar-db
@@ -706,13 +766,13 @@ def api_actualizar_db():
         if not partidos:
             return jsonify({
                 "status": "ok",
-                "message": "No hay partidos nuevos en las últimas 6 horas para procesar.",
-                "partidos_procesados": [],
+                "message": "No hay partidos nuevos para procesar.",
+                "partidos_processed": [],
             }), 200
 
         return jsonify({
             "status": "success",
-            "message": f"Base de datos actualizada: {len(partidos)} partido(s) procesados y trivia regenerada.",
+            "message": f"Base de datos actualizada: {len(partidos)} partido(s) procesados y trivia evaluada.",
             "partidos_procesados": partidos,
         }), 200
     except Exception as e:
@@ -744,6 +804,32 @@ if __name__ == "__main__":
                         print(f"   {op['letra']}) {op['texto']}{correcta}")
         finally:
             conn.close()
+            
+    elif args and args[0] == "test-fetch":
+        print("=== INICIANDO PRUEBA DE OBTENCIÓN DE PARTIDOS ===")
+        conn = conectar_supabase()
+        try:
+            max_fecha = obtener_ultima_fecha_partido(conn)
+            print(f"-> Última fecha detectada en Base de Datos: {max_fecha}")
+            
+            ahora = datetime.now(timezone.utc)
+            ayer = ahora - timedelta(days=1)
+            fechas = [ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")]
+            print(f"-> Evaluando API de ESPN para las fechas: {fechas}")
+            
+            for f in fechas:
+                r = requests.get(ESPN_SCOREBOARD, params={"dates": f}, headers=HEADERS, timeout=15)
+                print(f"   Scoreboard {f} | Status Code: {r.status_code}")
+                if r.status_code == 200:
+                    evs = r.json().get('events', [])
+                    print(f"   Total eventos en JSON: {len(evs)}")
+                    for ev in evs[:5]:
+                        print(f"     - Partido ID: {ev.get('id')} | {ev.get('name')} | Fecha: {ev.get('date')} | Terminado: {ev.get('status', {}).get('type', {}).get('completed')}")
+        except Exception as e:
+            print(f"Error en la prueba: {e}")
+        finally:
+            conn.close()
+            print("=== PRUEBA FINALIZADA ===")
     else:
         # Inicializar tablas al arrancar
         conn = conectar_supabase()
