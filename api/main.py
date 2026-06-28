@@ -609,7 +609,7 @@ def _procesar_partidos(conn):
     1. Obtiene la fecha máxima guardada en la BD para filtrar a partir de ayer.
     2. Consulta ESPN Scoreboard para ayer y hoy.
     3. Guarda nuevos partidos.
-    4. SINO tiene preguntas previas, genera nueva trivia (evita duplicar/gastar tokens).
+    4. SINO tiene preguntas previas, genera nueva trivia.
     """
     ultima_fecha_str = obtener_ultima_fecha_partido(conn)
     ultima_fecha = None
@@ -658,10 +658,27 @@ def _procesar_partidos(conn):
                 except Exception:
                     if id_evento not in partidos_candidatos:
                         partidos_candidatos.append(id_evento)
+                        
+        # 🚀 LA LÓGICA QUE FALTABA CORRER Y EL RETURN CRUCIAL:
+        partidos_procesados_exito = []
+        for id_partido in partidos_candidatos:
+            try:
+                # 1. Guarda el partido y jugadores en la BD
+                procesar_y_guardar_en_supabase(id_partido, conn)
+                
+                # 2. Genera la trivia con Gemini únicamente si no existe
+                generar_y_guardar_trivia_partido(id_partido, conn)
+                
+                partidos_processed_exito.append(id_partido)
+            except Exception as ex_partido:
+                print(f"  ❌ Error procesando el partido individual {id_partido}: {ex_partido}")
+                
+        # Retornamos la lista para que len() no falle en ejecutar_cron_diario
+        return partidos_procesados_exito
+
     except Exception as e:
         print(f"Error obteniendo agenda incremental: {e}")
         return []
-
 
 
 
