@@ -21,10 +21,11 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# ✅ URLs correctas de la API pública de ESPN
+# ✅ URLs globales unificadas para evitar fallos de competidores vacíos en ligas específicas
 URL_ESPN_TODOS = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
-URL_ESPN_FIFA  = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
-ESPN_SUMMARY   = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard/summary"
+URL_ESPN_FIFA  = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
+ESPN_SUMMARY   = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
+
 def conectar_supabase():
     return psycopg2.connect(
         host=DB_HOST, database=DB_NAME,
@@ -46,104 +47,88 @@ def obtener_ultima_fecha_partido(conn):
         cursor.close()
     return None
 
-def obtener_partidos_ultimas_6_horas():
+def _procesar_partidos(conn):
+    """
+    Lógica compartida dinámica y robusta con URLs globales de ESPN:
+    1. Obtiene la fecha máxima guardada en la BD para filtrar a partir de ayer.
+    2. Consulta ESPN Scoreboard global para ayer y hoy.
+    3. Guarda nuevos partidos, sus plantillas y eventos clave.
+    4. SINO tiene preguntas previas, genera nueva trivia con Gemini.
+    """
+    ultima_fecha_str = obtener_ultima_fecha_partido(conn)
+    ultima_fecha = None
+    
+    if ultima_fecha_str:
+        try:
+            if isinstance(ultima_fecha_str, datetime):
+                ultima_fecha = ultima_fecha_str.astimezone(timezone.utc)
+            else:
+                ultima_fecha = datetime.fromisoformat(ultima_fecha_str.replace('Z', '+00:00'))
+        except Exception:
+            pass
+
+    # Si no hay registros previos, se calcula por defecto desde las últimas 24 horas
+    if not ultima_fecha:
+        ultima_fecha = datetime.now(timezone.utc) - timedelta(days=1)
+    
     ahora = datetime.now(timezone.utc)
-    # Ampliamos a 12 horas para tener un margen seguro y no perder partidos
-    hace_12_horas = ahora - timedelta(hours=12)
-
-    # Consultamos hoy, ayer y anteayer para evitar desfases por zonas horarias o medianoches
-    fechas = list({
-        ahora.strftime("%Y%m%d"), 
-        (ahora - timedelta(days=1)).strftime("%Y%m%d"), 
-        (ahora - timedelta(days=2)).strftime("%Y%m%d")
-    })
-
-    print(f"Consultando partidos finalizados en la ventana de tiempo para las fechas: {', '.join(fechas)}...")
-    ids = []
+    ayer = ahora - timedelta(days=1)
+    fechas_a_revisar = list({ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")})
+    
+    print(f"Buscando partidos nuevos desde la fecha base: {ultima_fecha} en las fechas ESPN: {fechas_a_revisar}")
+    partidos_candidatos = []
     
     try:
-        for fecha_str in fechas:
-            respuesta = requests.get(
-                URL_ESPN_FIFA,
-                params={"dates": fecha_str},
-                headers=HEADERS,
-                timeout=15
-            )
-            print(f"  ESPN scoreboard {fecha_str}: HTTP {respuesta.status_code}")
-            
-            if respuesta.status_code != 200:
+        for f_str in fechas_a_revisar:
+            resp = requests.get(URL_ESPN_TODOS, params={"dates": f_str}, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
                 continue
-
-            datos_json = respuesta.json()
-            eventos = datos_json.get('events', [])
             
+            eventos = resp.json().get('events', [])
             for evento in eventos:
                 id_evento = evento.get('id')
                 estado = evento.get('status', {})
                 tipo = estado.get('type', {})
-
-                # 1. Filtro estricto: Solo partidos que ya terminaron
+                
                 if not tipo.get('completed', False):
                     continue
-
-                # 2. Filtro de ventana de tiempo
+                
                 fecha_evento_str = evento.get('date', '')
                 try:
-                    # Parsear la fecha en formato ISO (UTC)
                     fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
-                    # Estimamos que el partido dura aprox. 2 horas
-                    fecha_fin_estimada = fecha_inicio + timedelta(hours=2)
-                    
-                    # Si el partido terminó dentro de las últimas 12 horas, lo agregamos
-                    if fecha_fin_estimada >= hace_12_horas:
-                        if id_evento not in ids:
-                            ids.append(id_evento)
+                    if fecha_inicio > ultima_fecha:
+                        if id_evento not in partidos_candidatos:
+                            partidos_candidatos.append(id_evento)
                 except Exception:
-                    # Si falla el parseo de la fecha, lo agregamos igual por seguridad si está 'completed'
-                    if id_evento not in ids:
-                        ids.append(id_evento)
+                    if id_evento not in partidos_candidatos:
+                        partidos_candidatos.append(id_evento)
+                        
+        # Procesamiento individual de los partidos encontrados
+        partidos_procesados_exito = []
+        for id_partido in partidos_candidatos:
+            try:
+                # 1. Guarda el partido, jugadores y eventos en la BD
+                procesar_y_guardar_en_supabase(id_partido, conn)
+                
+                # 2. Genera la trivia con Gemini únicamente si no existe
+                generar_y_guardar_trivia_partido(id_partido, conn)
+                
+                partidos_procesados_exito.append(id_partido)
+            except Exception as ex_partido:
+                print(f"  ❌ Error procesando el partido individual {id_partido}: {ex_partido}")
+                
+        return partidos_procesados_exito
 
-        print(f"  -> Total de partidos encontrados y listos para procesar: {len(ids)}")
-        return ids
-        
     except Exception as e:
-        print(f"Error crítico al obtener agenda de ESPN: {e}")
-        return []
-
-        
-def obtener_partidos_dia_anterior():
-    ayer = datetime.now() - timedelta(days=1)
-    fecha_str = ayer.strftime("%Y%m%d")
-
-    print(f"Consultando partidos del {fecha_str}...")
-    try:
-        respuesta = requests.get(
-            URL_ESPN_FIFA,
-            params={"dates": fecha_str},
-            headers=HEADERS,
-            timeout=15
-        )
-        print(f"  ESPN scoreboard status: {respuesta.status_code}")
-        if respuesta.status_code != 200:
-            return []
-        datos = respuesta.json()
-        ids = [evento.get('id') for evento in datos.get('events', [])]
-        print(f"  Encontrados {len(ids)} partidos.")
-        return ids
-    except Exception as e:
-        print(f"Error al obtener agenda: {e}")
+        print(f"Error obteniendo agenda incremental: {e}")
         return []
 
 def procesar_y_guardar_en_supabase(id_partido, conn):
-    """✅ Recibe la conexión compartida"""
     print(f"  Procesando partido {id_partido}...")
     try:
-        respuesta = requests.get(
-            ESPN_SUMMARY,
-            params={"event": id_partido},
-            headers=HEADERS,
-            timeout=15
-        )
+        url_summary_global = f"{ESPN_SUMMARY}/{id_partido}/summary"
+        respuesta = requests.get(url_summary_global, headers=HEADERS, timeout=15)
+        
         if respuesta.status_code != 200:
             print(f"  HTTP {respuesta.status_code} para partido {id_partido}, saltando.")
             return
@@ -222,7 +207,6 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
                 continue
 
             id_ev = evento.get('id', f"{id_partido}_{time.time_ns()}")
-
             clock_display = evento.get('clock', {}).get('displayValue', '0')
             minuto = int(''.join(filter(str.isdigit, clock_display.split('+')[0].split(':')[0])) or 0)
 
@@ -262,24 +246,14 @@ def procesar_y_guardar_en_supabase(id_partido, conn):
 
         conn.commit()
         cursor.close()
-        print(f"  ✓ {local.get('team',{}).get('name')} vs {visitante.get('team',{}).get('name')}")
+        print(f"  ✓ {local.get('team',{}).get('name')} vs {visitante.get('team',{}).get('name')} guardado.")
 
     except Exception as e:
         print(f"  ✗ Error en partido {id_partido}: {e}")
         conn.rollback()
 
-# ──────────────────────────────────────────────
-# NUEVAS FUNCIONES: TRIVIA CON IA
-# ──────────────────────────────────────────────
-
 def _construir_contexto_partido(id_partido, conn):
-    """
-    Arma un texto resumido del partido leyendo las tablas ya cargadas.
-    Devuelve un dict con los datos del partido, o None si no existe.
-    """
     cursor = conn.cursor()
-
-    # Datos generales del partido
     cursor.execute('''
         SELECT id_partido, fecha_partido, liga_nombre,
                equipo_local_nombre, equipo_local_goles,
@@ -295,7 +269,6 @@ def _construir_contexto_partido(id_partido, conn):
     (id_p, fecha, liga, loc_nombre, loc_goles,
      vis_nombre, vis_goles, ganador, penales) = fila
 
-    # Eventos del partido
     cursor.execute('''
         SELECT tipo_evento, minuto, periodo, nombre_jugador, nombre_asistente, texto_evento
         FROM eventos_partido
@@ -304,7 +277,6 @@ def _construir_contexto_partido(id_partido, conn):
     ''', (id_partido,))
     eventos = cursor.fetchall()
 
-    # Titulares de cada equipo
     cursor.execute('''
         SELECT jp.nombre_jugador, jp.posicion, p.equipo_local_nombre,
                p.equipo_visitante_nombre,
@@ -316,7 +288,6 @@ def _construir_contexto_partido(id_partido, conn):
     jugadores = cursor.fetchall()
     cursor.close()
 
-    # Armar texto de contexto
     lineas = [
         f"Partido: {loc_nombre} {loc_goles} - {vis_goles} {vis_nombre}",
         f"Liga: {liga}",
@@ -346,15 +317,7 @@ def _construir_contexto_partido(id_partido, conn):
         "contexto_texto": "\n".join(lineas),
     }
 
-
 def generar_preguntas_partido(id_partido, conn):
-    """
-    Llama a OpenAI con el contexto del partido y genera 20 preguntas
-    de opción múltiple (4 opciones cada una, una correcta). 
-    Devuelve una lista de dicts con el formato:
-      [{ "pregunta": str, "opciones": [{"letra": "A", "texto": str, "correcta": bool}, ...] }]
-    o lista vacía si hay error.
-    """
     contexto = _construir_contexto_partido(id_partido, conn)
     if not contexto:
         print(f"  ✗ No se encontró el partido {id_partido} en la BD para generar preguntas.")
@@ -397,7 +360,7 @@ def generar_preguntas_partido(id_partido, conn):
             "generationConfig": {
                 "temperature": 0.7,
                 "maxOutputTokens": 4000,
-                "responseMimeType": "application/json",  # fuerza JSON puro
+                "responseMimeType": "application/json",
             },
         }
         resp = requests.post(url, json=payload, timeout=60)
@@ -405,9 +368,7 @@ def generar_preguntas_partido(id_partido, conn):
         contenido = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         datos = json.loads(contenido)
 
-        # El modelo puede devolver {"preguntas": [...]} o directamente [...]
         preguntas = datos if isinstance(datos, list) else datos.get("preguntas", list(datos.values())[0])
-
         print(f"  ✓ {len(preguntas)} preguntas generadas.")
         return preguntas
 
@@ -415,16 +376,9 @@ def generar_preguntas_partido(id_partido, conn):
         print(f"  ✗ Error al llamar a Gemini: {e}")
         return []
 
-
 def guardar_preguntas_en_bd(id_partido, preguntas, conn):
-    """
-    Guarda la lista de preguntas (y sus opciones) en las tablas
-    preguntas_partido y respuestas_preguntas.
-    Usa ON CONFLICT DO NOTHING para idempotencia.
-    """
     if not preguntas:
         return
-
     cursor = conn.cursor()
     try:
         for nro, item in enumerate(preguntas, start=1):
@@ -448,7 +402,6 @@ def guardar_preguntas_en_bd(id_partido, preguntas, conn):
                     opcion.get("texto", ""),
                     opcion.get("correcta", False),
                 ))
-
         conn.commit()
         print(f"  ✓ Preguntas guardadas en BD para partido {id_partido}.")
     except Exception as e:
@@ -457,17 +410,9 @@ def guardar_preguntas_en_bd(id_partido, preguntas, conn):
     finally:
         cursor.close()
 
-
 def generar_y_guardar_trivia_partido(id_partido, conn):
-    """
-    Orquesta la generación y persistencia de trivia para un partido.
-    Verifica si ya existen preguntas para evitar regenerarlas.
-    """
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT COUNT(*) FROM preguntas_partido WHERE id_partido = %s;",
-        (id_partido,)
-    )
+    cursor.execute("SELECT COUNT(*) FROM preguntas_partido WHERE id_partido = %s;", (id_partido,))
     (cantidad,) = cursor.fetchone()
     cursor.close()
 
@@ -477,98 +422,6 @@ def generar_y_guardar_trivia_partido(id_partido, conn):
 
     preguntas = generar_preguntas_partido(id_partido, conn)
     guardar_preguntas_en_bd(id_partido, preguntas, conn)
-
-
-def obtener_preguntas_partido(id_partido, conn):
-    """
-    Devuelve todas las preguntas con sus opciones para un partido dado.
-    """
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT p.id_pregunta, p.nro_pregunta, p.pregunta,
-               r.id_respuesta, r.letra, r.texto_opcion, r.es_correcta
-        FROM preguntas_partido p
-        JOIN respuestas_preguntas r ON r.id_pregunta = p.id_pregunta
-        WHERE p.id_partido = %s
-        ORDER BY p.nro_pregunta, r.letra;
-    ''', (id_partido,))
-    filas = cursor.fetchall()
-    cursor.close()
-
-    # Agrupar por pregunta
-    preguntas_dict = {}
-    for (id_preg, nro, texto_preg, id_resp, letra, texto_op, correcta) in filas:
-        if id_preg not in preguntas_dict:
-            preguntas_dict[id_preg] = {
-                "id_pregunta": id_preg,
-                "nro_pregunta": nro,
-                "pregunta": texto_preg,
-                "opciones": [],
-            }
-        preguntas_dict[id_preg]["opciones"].append({
-            "id_respuesta": id_resp,
-            "letra": letra,
-            "texto": texto_op,
-            "es_correcta": correcta,
-        })
-
-    return list(preguntas_dict.values())
-
-def get_id_partido_por_nombre(partido_nombre, conn):
-    """
-    Busca el id_partido basándose en el nombre descriptivo del partido.
-    """
-    if not partido_nombre:
-        return None
-
-    cursor = conn.cursor()
-    try:
-        query_directa = """
-            SELECT id_partido FROM partidos 
-            WHERE equipo_local_nombre ILIKE %s 
-               OR equipo_visitante_nombre ILIKE %s
-            LIMIT 1;
-        """
-        param = f"%{partido_nombre.strip()}%"
-        cursor.execute(query_directa, (param, param))
-        fila = cursor.fetchone()
-        if fila:
-            cursor.close()
-            return fila[0]
-
-        separadores = [" vs ", " - ", " vs. "]
-        partes = []
-        for sep in separadores:
-            if sep in partido_nombre.lower():
-                partes = partido_nombre.lower().split(sep)
-                break
-        
-        if len(partes) >= 2:
-            eq1 = partes[0].strip()
-            eq2 = partes[1].strip()
-
-            query_combinada = """
-                SELECT id_partido FROM partidos 
-                WHERE (equipo_local_nombre ILIKE %s AND equipo_visitante_nombre ILIKE %s)
-                   OR (equipo_local_nombre ILIKE %s AND equipo_visitante_nombre ILIKE %s)
-                LIMIT 1;
-            """
-            cursor.execute(query_combinada, (f"%{eq1}%", f"%{eq2}%", f"%{eq2}%", f"%{eq1}%"))
-            fila = cursor.fetchone()
-            if fila:
-                cursor.close()
-                return fila[0]
-
-    except Exception as e:
-        print(f"Error en get_id_partido_por_nombre: {e}")
-    finally:
-        cursor.close()
-
-    return None
-
-# ──────────────────────────────────────────────
-# CRON PRINCIPAL
-# ──────────────────────────────────────────────
 
 def ejecutar_cron_diario():
     print(f"=== CRON iniciado: {datetime.now()} ===")
@@ -589,7 +442,7 @@ def ejecutar_cron_diario():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 🚀 AGREGADO SEGURO: SERVIDOR API REST CON TOKEN DE ENTORNO
+# 🚀 SERVIDOR API REST (FLASK)
 # ──────────────────────────────────────────────────────────────────────
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -598,104 +451,21 @@ app = Flask(__name__)
 CORS(app)
 
 def _verificar_token(datos):
-    """Valida el token de administrador contra la variable de entorno ADMIN_TOKEN."""
     token_esperado = os.environ.get("ADMIN_TOKEN", "carinal1712")
     usuario = (datos.get("usuario") or datos.get("token") or "").strip()
     return usuario == token_esperado
 
-def _procesar_partidos(conn):
-    """
-    Lógica compartida dinámica y robusta:
-    1. Obtiene la fecha máxima guardada en la BD para filtrar a partir de ayer.
-    2. Consulta ESPN Scoreboard para ayer y hoy.
-    3. Guarda nuevos partidos.
-    4. SINO tiene preguntas previas, genera nueva trivia.
-    """
-    ultima_fecha_str = obtener_ultima_fecha_partido(conn)
-    ultima_fecha = None
-    
-    if ultima_fecha_str:
-        try:
-            if isinstance(ultima_fecha_str, datetime):
-                ultima_fecha = ultima_fecha_str.astimezone(timezone.utc)
-            else:
-                ultima_fecha = datetime.fromisoformat(ultima_fecha_str.replace('Z', '+00:00'))
-        except Exception:
-            pass
-
-    # Si no hay registros previos, se calcula por defecto desde las últimas 24 horas
-    if not ultima_fecha:
-        ultima_fecha = datetime.now(timezone.utc) - timedelta(days=1)
-    
-    ahora = datetime.now(timezone.utc)
-    ayer = ahora - timedelta(days=1)
-    fechas_a_revisar = list({ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")})
-    
-    print(f"Buscando partidos nuevos desde la fecha base: {ultima_fecha} en las fechas ESPN: {fechas_a_revisar}")
-    partidos_candidatos = []
-    
-    try:
-        for f_str in fechas_a_revisar:
-            resp = requests.get(URL_ESPN_FIFA, params={"dates": f_str}, headers=HEADERS, timeout=15)
-            if resp.status_code != 200:
-                continue
-            
-            eventos = resp.json().get('events', [])
-            for evento in eventos:
-                id_evento = evento.get('id')
-                estado = evento.get('status', {})
-                tipo = estado.get('type', {})
-                
-                if not tipo.get('completed', False):
-                    continue
-                
-                fecha_evento_str = evento.get('date', '')
-                try:
-                    fecha_inicio = datetime.fromisoformat(fecha_evento_str.replace('Z', '+00:00'))
-                    if fecha_inicio > ultima_fecha:
-                        if id_evento not in partidos_candidatos:
-                            partidos_candidatos.append(id_evento)
-                except Exception:
-                    if id_evento not in partidos_candidatos:
-                        partidos_candidatos.append(id_evento)
-                        
-        # 🚀 LA LÓGICA QUE FALTABA CORRER Y EL RETURN CRUCIAL:
-        partidos_procesados_exito = []
-        for id_partido in partidos_candidatos:
-            try:
-                # 1. Guarda el partido y jugadores en la BD
-                procesar_y_guardar_en_supabase(id_partido, conn)
-                
-                # 2. Genera la trivia con Gemini únicamente si no existe
-                generar_y_guardar_trivia_partido(id_partido, conn)
-                
-                partidos_processed_exito.append(id_partido)
-            except Exception as ex_partido:
-                print(f"  ❌ Error procesando el partido individual {id_partido}: {ex_partido}")
-                
-        # Retornamos la lista para que len() no falle en ejecutar_cron_diario
-        return partidos_procesados_exito
-
-    except Exception as e:
-        print(f"Error obteniendo agenda incremental: {e}")
-        return []
-
-
-
 @app.route('/regenerar-trivia', methods=['POST'])
 def api_regenerar_trivia():
     datos = request.get_json() or {}
-
     if not _verificar_token(datos):
         return jsonify({"status": "denied", "message": "Acceso prohibido."}), 403
 
     conn = conectar_supabase()
     try:
         partidos = _procesar_partidos(conn)
-
         if not partidos:
             return jsonify({"status": "error", "message": "No se encontraron partidos nuevos para procesar."}), 404
-
         return jsonify({
             "status": "success",
             "message": f"Proceso completado. Se evaluaron {len(partidos)} partidos sin destruir trivias existentes.",
@@ -706,48 +476,34 @@ def api_regenerar_trivia():
     finally:
         conn.close()
 
-
 @app.route('/actualizar-db', methods=['POST'])
 def api_actualizar_db():
-    """
-    Endpoint de actualización manual de rango completo.
-    Busca partidos recientes, guarda datos básicos y genera trivia de los que falten.
-    """
     datos = request.get_json() or {}
-
     if not _verificar_token(datos):
         return jsonify({"status": "denied", "message": "Acceso prohibido."}), 403
 
     conn = conectar_supabase()
     try:
         partidos = _procesar_partidos(conn)
-
         if not partidos:
             return jsonify({
                 "status": "ok",
                 "message": "No hay partidos nuevos para procesar.",
                 "partidos_procesados": [],
             }), 200
-
         return jsonify({
             "status": "success",
             "message": f"Base de datos actualizada manualmente: {len(partidos)} partido(s) evaluados.",
-            "partidos_procesados": partidos,
+            "partidos_processed": partidos,
         }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         conn.close()
 
-
 @app.route('/cargar-partido-manual', methods=['POST'])
 def api_cargar_partido_manual():
-    """
-    🚀 NUEVO ENDPOINT: Permite forzar la carga e inteligencia de un solo partido 
-    proveyendo su ID específico de ESPN. Respeta la regla de no borrar nada existente.
-    """
     datos = request.get_json() or {}
-
     if not _verificar_token(datos):
         return jsonify({"status": "denied", "message": "Acceso prohibido."}), 403
 
@@ -757,10 +513,7 @@ def api_cargar_partido_manual():
 
     conn = conectar_supabase()
     try:
-        # 1. Guardar/actualizar información del partido
         procesar_y_guardar_en_supabase(id_partido, conn)
-
-        # 2. Control preventivo de preguntas repetidas
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM preguntas_partido WHERE id_partido = %s;", (id_partido,))
         (cantidad_preguntas,) = cursor.fetchone()
@@ -768,9 +521,8 @@ def api_cargar_partido_manual():
 
         ia_invocada = False
         if cantidad_preguntas > 0:
-            msg_trivia = f"El partido ya poseía {cantidad_preguntas} preguntas. No se llamó a la IA para evitar duplicados."
+            msg_trivia = f"El partido ya poseía {cantidad_preguntas} preguntas. No se llamó a la IA."
         else:
-            # 3. Generar únicamente si no existían preguntas previamente
             preguntas = generar_preguntas_partido(id_partido, conn)
             if preguntas:
                 guardar_preguntas_en_bd(id_partido, preguntas, conn)
@@ -781,11 +533,10 @@ def api_cargar_partido_manual():
 
         return jsonify({
             "status": "success",
-            "message": f"Partido {id_partido} procesado manualmente de forma exitosa.",
+            "message": f"Partido {id_partido} procesado manualmente.",
             "trivia_status": msg_trivia,
             "ia_invocada": ia_invocada
         }), 200
-
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
@@ -795,34 +546,24 @@ def test_diagnostico():
     print("==================================================")
     print("🔍 INICIANDO DIAGNÓSTICO DE CARGA DE PARTIDOS")
     print("==================================================\n")
-
-    # 1. Verificar variables de entorno
-    print("1. [ENTORNO] Verificando credenciales...")
     if not DB_USER or not DB_PASS:
-        print("❌ ERROR: Las variables de entorno USER_BASE o CLAVE_BASE no están definidas.")
+        print("❌ ERROR: USER_BASE o CLAVE_BASE no están definidas.")
     else:
         print("✅ Variables de entorno para Base de Datos detectadas.")
-    
     if not os.environ.get("GEMINI_API_KEY"):
         print("⚠️ ADVERTENCIA: GEMINI_API_KEY no está configurada.")
     else:
         print("✅ Variable GEMINI_API_KEY detectada.")
 
-    # 2. Verificar Conexión a Base de Datos y Última Fecha
     print("\n2. [BASE DE DATOS] Conectando a Supabase...")
     conn = None
     ultima_fecha = None
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME,
-            user=DB_USER, password=DB_PASS, port=DB_PORT,
-            connect_timeout=5
-        )
+        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS, port=DB_PORT, connect_timeout=5)
         cursor = conn.cursor()
         cursor.execute("SELECT MAX(fecha_partido) FROM partidos;")
         fila = cursor.fetchone()
         cursor.close()
-        
         if fila and fila[0]:
             ultima_fecha = fila[0]
             print(f"✅ Conexión exitosa. Último partido registrado en BD: {ultima_fecha}")
@@ -831,82 +572,29 @@ def test_diagnostico():
     except Exception as e:
         print(f"❌ ERROR al conectar o consultar Supabase: {e}")
     finally:
-        if conn:
-            conn.close()
+        if conn: conn.close()
 
-    # 3. Calcular ventanas de tiempo como lo hace tu script
-    print("\n3. [TIEMPO] Calculando fechas de búsqueda...")
     ahora = datetime.now(timezone.utc)
     ayer = ahora - timedelta(days=1)
     fechas_a_revisar = list({ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")})
-    print(f"   Hora actual (UTC): {ahora}")
-    print(f"   Fechas que se le enviarán a ESPN: {fechas_a_revisar}")
+    print(f"\n3. [TIEMPO] Fechas que se le enviarán a ESPN: {fechas_a_revisar}")
 
-    if ultima_fecha:
+    print("\n4. [API ESPN] Probando respuestas globales...")
+    for f_str in fechas_a_revisar:
         try:
-            if isinstance(ultima_fecha, datetime):
-                ultima_fecha_utc = ultima_fecha.astimezone(timezone.utc)
-            else:
-                ultima_fecha_utc = datetime.fromisoformat(str(ultima_fecha).replace('Z', '+00:00'))
-            print(f"   Filtro: Solo se admitirán partidos posteriores a: {ultima_fecha_utc}")
+            resp = requests.get(URL_ESPN_TODOS, params={"dates": f_str}, headers=HEADERS, timeout=10)
+            print(f"      📅 Fecha {f_str} -> HTTP Status: {resp.status_code}")
+            if resp.status_code == 200:
+                eventos = resp.json().get('events', [])
+                print(f"      Total partidos devueltos por ESPN: {len(eventos)}")
         except Exception as e:
-            print(f"   ⚠️ No se pudo parsear de forma estricta la fecha de la BD para la comparación: {e}")
-            ultima_fecha_utc = ayer
-    else:
-        ultima_fecha_utc = ayer
-
-    # 4. Probar respuestas de las APIs de ESPN
-    print("\n4. [API ESPN] Probando respuestas de red...")
-    for nombre_url, url in [("ESPN ALL (Fútbol General)", URL_ESPN_TODOS), ("ESPN FIFA WORLD (Fifa/Mundial)", URL_ESPN_FIFA)]:
-        print(f"\n   -> Evaluando endpoint: {nombre_url}")
-        for f_str in fechas_a_revisar:
-            try:
-                resp = requests.get(url, params={"dates": f_str}, headers=HEADERS, timeout=10)
-                print(f"      📅 Fecha {f_str} -> HTTP Status: {resp.status_code}")
-                
-                if resp.status_code == 200:
-                    eventos = resp.json().get('events', [])
-                    print(f"      Total partidos devueltos por ESPN: {len(eventos)}")
-                    
-                    partidos_finalizados = 0
-                    partidos_nuevos = 0
-                    
-                    for evento in eventos[:5]: # Inspeccionar los primeros 5 para no saturar la consola
-                        id_ev = evento.get('id')
-                        name_ev = evento.get('name', 'S/N')
-                        completed = evento.get('status', {}).get('type', {}).get('completed', False)
-                        date_str = evento.get('date', '')
-                        
-                        if completed:
-                            partidos_finalizados += 1
-                            try:
-                                fecha_inicio = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                                if fecha_inicio > ultima_fecha_utc:
-                                    partidos_nuevos += 1
-                            except:
-                                pass
-                                
-                    print(f"      Muestra analizada: {min(5, len(eventos))} partidos.")
-                    print(f"      - Finalizados en la muestra: {partidos_finalizados}")
-                    print(f"      - Pasan el filtro de fecha de BD en la muestra: {partidos_nuevos}")
-                    
-                    if len(eventos) > 0 and partidos_finalizados == 0:
-                        print("      ⚠️ Alerta: Hay partidos pero ninguno figura como 'completed' (finalizado).")
-                else:
-                    print(f"      ❌ ESPN no respondió correctamente para la fecha {f_str}")
-            except Exception as e:
-                print(f"      ❌ Error de conexión con ESPN en fecha {f_str}: {e}")
-
+            print(f"      ❌ Error con ESPN en fecha {f_str}: {e}")
     print("\n==================================================")
-    print("🔍 DIAGNÓSTICO FINALIZADO")
-    print("==================================================")
 
 if __name__ == "__main__":
     import sys
-
     args = sys.argv[1:]
     
-    # 1. Ejecución por defecto (La que llamará Railway Cron)
     if not args:
         print("=== INICIANDO CRON DE PARTIDOS (RAILWAY) ===")
         try:
@@ -914,9 +602,8 @@ if __name__ == "__main__":
             print("✓ Procesamiento diario finalizado con éxito.")
         except Exception as e:
             print(f"❌ Error crítico en la ejecución del cron: {e}")
-            sys.exit(1) # Informa a Railway que el job falló
+            sys.exit(1)
 
-    # 2. Modo de prueba para generar Trivias
     elif args[0] == "test-trivia":
         id_test = args[1] if len(args) > 1 else None
         if not id_test:
@@ -937,27 +624,22 @@ if __name__ == "__main__":
         finally:
             conn.close()
             
-    # 3. Modo de prueba para chequear ESPN
     elif args[0] == "test-fetch":
         print("=== INICIANDO PRUEBA DE OBTENCIÓN DE PARTIDOS ===")
         conn = conectar_supabase()
         try:
             max_fecha = obtener_ultima_fecha_partido(conn)
             print(f"-> Última fecha detectada en Base de Datos: {max_fecha}")
-            
             ahora = datetime.now(timezone.utc)
             ayer = ahora - timedelta(days=1)
             fechas = [ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")]
-            print(f"-> Evaluando API de ESPN para las fechas: {fechas}")
             
             for f in fechas:
-                r = requests.get(URL_ESPN_FIFA, params={"dates": f}, headers=HEADERS, timeout=15)
+                r = requests.get(URL_ESPN_TODOS, params={"dates": f}, headers=HEADERS, timeout=15)
                 print(f"   Scoreboard {f} | Status Code: {r.status_code}")
                 if r.status_code == 200:
                     evs = r.json().get('events', [])
                     print(f"   Total eventos en JSON: {len(evs)}")
-                    for ev in evs[:5]:
-                        print(f"     - Partido ID: {ev.get('id')} | {ev.get('name')} | Fecha: {ev.get('date')} | Terminado: {ev.get('status', {}).get('type', {}).get('completed')}")
         except Exception as e:
             print(f"❌ Error en la prueba: {e}")
         finally:
@@ -967,4 +649,3 @@ if __name__ == "__main__":
     else:
         print(f"Comando no reconocido: {args[0]}")
         sys.exit(1)
-
