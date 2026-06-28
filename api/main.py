@@ -22,8 +22,8 @@ HEADERS = {
 }
 
 # ✅ URLs correctas de la API pública de ESPN
-#ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
-ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
+URL_ESPN_TODOS = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
+URL_ESPN_FIFA  = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
 ESPN_SUMMARY   = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard/summary"
 def conectar_supabase():
     return psycopg2.connect(
@@ -64,7 +64,7 @@ def obtener_partidos_ultimas_6_horas():
     try:
         for fecha_str in fechas:
             respuesta = requests.get(
-                ESPN_SCOREBOARD,
+                URL_ESPN_FIFA,
                 params={"dates": fecha_str},
                 headers=HEADERS,
                 timeout=15
@@ -773,6 +773,116 @@ def api_cargar_partido_manual():
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         conn.close()
+        
+def test_diagnostico():
+    print("==================================================")
+    print("🔍 INICIANDO DIAGNÓSTICO DE CARGA DE PARTIDOS")
+    print("==================================================\n")
+
+    # 1. Verificar variables de entorno
+    print("1. [ENTORNO] Verificando credenciales...")
+    if not DB_USER or not DB_PASS:
+        print("❌ ERROR: Las variables de entorno USER_BASE o CLAVE_BASE no están definidas.")
+    else:
+        print("✅ Variables de entorno para Base de Datos detectadas.")
+    
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("⚠️ ADVERTENCIA: GEMINI_API_KEY no está configurada.")
+    else:
+        print("✅ Variable GEMINI_API_KEY detectada.")
+
+    # 2. Verificar Conexión a Base de Datos y Última Fecha
+    print("\n2. [BASE DE DATOS] Conectando a Supabase...")
+    conn = None
+    ultima_fecha = None
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME,
+            user=DB_USER, password=DB_PASS, port=DB_PORT,
+            connect_timeout=5
+        )
+        cursor = conn.cursor()
+        cursor.execute("SELECT MAX(fecha_partido) FROM partidos;")
+        fila = cursor.fetchone()
+        cursor.close()
+        
+        if fila and fila[0]:
+            ultima_fecha = fila[0]
+            print(f"✅ Conexión exitosa. Último partido registrado en BD: {ultima_fecha}")
+        else:
+            print("ℹ️ Conexión exitosa, pero la tabla 'partidos' está vacía.")
+    except Exception as e:
+        print(f"❌ ERROR al conectar o consultar Supabase: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+    # 3. Calcular ventanas de tiempo como lo hace tu script
+    print("\n3. [TIEMPO] Calculando fechas de búsqueda...")
+    ahora = datetime.now(timezone.utc)
+    ayer = ahora - timedelta(days=1)
+    fechas_a_revisar = list({ayer.strftime("%Y%m%d"), ahora.strftime("%Y%m%d")})
+    print(f"   Hora actual (UTC): {ahora}")
+    print(f"   Fechas que se le enviarán a ESPN: {fechas_a_revisar}")
+
+    if ultima_fecha:
+        try:
+            if isinstance(ultima_fecha, datetime):
+                ultima_fecha_utc = ultima_fecha.astimezone(timezone.utc)
+            else:
+                ultima_fecha_utc = datetime.fromisoformat(str(ultima_fecha).replace('Z', '+00:00'))
+            print(f"   Filtro: Solo se admitirán partidos posteriores a: {ultima_fecha_utc}")
+        except Exception as e:
+            print(f"   ⚠️ No se pudo parsear de forma estricta la fecha de la BD para la comparación: {e}")
+            ultima_fecha_utc = ayer
+    else:
+        ultima_fecha_utc = ayer
+
+    # 4. Probar respuestas de las APIs de ESPN
+    print("\n4. [API ESPN] Probando respuestas de red...")
+    for nombre_url, url in [("ESPN ALL (Fútbol General)", URL_ESPN_TODOS), ("ESPN FIFA WORLD (Fifa/Mundial)", URL_ESPN_FIFA)]:
+        print(f"\n   -> Evaluando endpoint: {nombre_url}")
+        for f_str in fechas_a_revisar:
+            try:
+                resp = requests.get(url, params={"dates": f_str}, headers=HEADERS, timeout=10)
+                print(f"      📅 Fecha {f_str} -> HTTP Status: {resp.status_code}")
+                
+                if resp.status_code == 200:
+                    eventos = resp.json().get('events', [])
+                    print(f"      Total partidos devueltos por ESPN: {len(eventos)}")
+                    
+                    partidos_finalizados = 0
+                    partidos_nuevos = 0
+                    
+                    for evento in eventos[:5]: # Inspeccionar los primeros 5 para no saturar la consola
+                        id_ev = evento.get('id')
+                        name_ev = evento.get('name', 'S/N')
+                        completed = evento.get('status', {}).get('type', {}).get('completed', False)
+                        date_str = evento.get('date', '')
+                        
+                        if completed:
+                            partidos_finalizados += 1
+                            try:
+                                fecha_inicio = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                                if fecha_inicio > ultima_fecha_utc:
+                                    partidos_nuevos += 1
+                            except:
+                                pass
+                                
+                    print(f"      Muestra analizada: {min(5, len(eventos))} partidos.")
+                    print(f"      - Finalizados en la muestra: {partidos_finalizados}")
+                    print(f"      - Pasan el filtro de fecha de BD en la muestra: {partidos_nuevos}")
+                    
+                    if len(eventos) > 0 and partidos_finalizados == 0:
+                        print("      ⚠️ Alerta: Hay partidos pero ninguno figura como 'completed' (finalizado).")
+                else:
+                    print(f"      ❌ ESPN no respondió correctamente para la fecha {f_str}")
+            except Exception as e:
+                print(f"      ❌ Error de conexión con ESPN en fecha {f_str}: {e}")
+
+    print("\n==================================================")
+    print("🔍 DIAGNÓSTICO FINALIZADO")
+    print("==================================================")
 
 
 if __name__ == "__main__":
@@ -780,7 +890,9 @@ if __name__ == "__main__":
     from apscheduler.schedulers.background import BackgroundScheduler
 
     args = sys.argv[1:]
-
+    
+    test_diagnostico()
+    
     if args and args[0] == "test-trivia":
         id_test = args[1] if len(args) > 1 else None
         if not id_test:
