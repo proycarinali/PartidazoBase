@@ -22,9 +22,9 @@ HEADERS = {
 }
 
 # ✅ URLs correctas de la API pública de ESPN
-ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
-ESPN_SUMMARY   = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary"
-
+#ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
+ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
+ESPN_SUMMARY   = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard/summary"
 def conectar_supabase():
     return psycopg2.connect(
         host=DB_HOST, database=DB_NAME,
