@@ -118,7 +118,7 @@ def obtener_partidos_dia_anterior():
     print(f"Consultando partidos del {fecha_str}...")
     try:
         respuesta = requests.get(
-            ESPN_SCOREBOARD,
+            URL_ESPN_FIFA,
             params={"dates": fecha_str},
             headers=HEADERS,
             timeout=15
@@ -636,7 +636,7 @@ def _procesar_partidos(conn):
     
     try:
         for f_str in fechas_a_revisar:
-            resp = requests.get(ESPN_SCOREBOARD, params={"dates": f_str}, headers=HEADERS, timeout=15)
+            resp = requests.get(URL_ESPN_FIFA, params={"dates": f_str}, headers=HEADERS, timeout=15)
             if resp.status_code != 200:
                 continue
             
@@ -884,20 +884,29 @@ def test_diagnostico():
     print("🔍 DIAGNÓSTICO FINALIZADO")
     print("==================================================")
 
-
 if __name__ == "__main__":
     import sys
-    from apscheduler.schedulers.background import BackgroundScheduler
 
     args = sys.argv[1:]
     
-    test_diagnostico()
-    
-    if args and args[0] == "test-trivia":
+    # 1. Ejecución por defecto (La que llamará Railway Cron)
+    if not args:
+        print("=== INICIANDO CRON DE PARTIDOS (RAILWAY) ===")
+        try:
+            ejecutar_cron_diario()
+            print("✓ Procesamiento diario finalizado con éxito.")
+        except Exception as e:
+            print(f"❌ Error crítico en la ejecución del cron: {e}")
+            sys.exit(1) # Informa a Railway que el job falló
+
+    # 2. Modo de prueba para generar Trivias
+    elif args[0] == "test-trivia":
         id_test = args[1] if len(args) > 1 else None
         if not id_test:
             print("Indicá el id_partido: python main.py test-trivia <id_partido>")
             sys.exit(1)
+        
+        print(f"=== TEST: GENERANDO TRIVIA PARA PARTIDO {id_test} ===")
         conn = conectar_supabase()
         try:
             preguntas = generar_preguntas_partido(id_test, conn)
@@ -911,7 +920,8 @@ if __name__ == "__main__":
         finally:
             conn.close()
             
-    elif args and args[0] == "test-fetch":
+    # 3. Modo de prueba para chequear ESPN
+    elif args[0] == "test-fetch":
         print("=== INICIANDO PRUEBA DE OBTENCIÓN DE PARTIDOS ===")
         conn = conectar_supabase()
         try:
@@ -924,7 +934,7 @@ if __name__ == "__main__":
             print(f"-> Evaluando API de ESPN para las fechas: {fechas}")
             
             for f in fechas:
-                r = requests.get(ESPN_SCOREBOARD, params={"dates": f}, headers=HEADERS, timeout=15)
+                r = requests.get(URL_ESPN_FIFA, params={"dates": f}, headers=HEADERS, timeout=15)
                 print(f"   Scoreboard {f} | Status Code: {r.status_code}")
                 if r.status_code == 200:
                     evs = r.json().get('events', [])
@@ -932,19 +942,12 @@ if __name__ == "__main__":
                     for ev in evs[:5]:
                         print(f"     - Partido ID: {ev.get('id')} | {ev.get('name')} | Fecha: {ev.get('date')} | Terminado: {ev.get('status', {}).get('type', {}).get('completed')}")
         except Exception as e:
-            print(f"Error en la prueba: {e}")
+            print(f"❌ Error en la prueba: {e}")
         finally:
             conn.close()
             print("=== PRUEBA FINALIZADA ===")
+            
     else:
-        conn = conectar_supabase()
-        conn.close()
+        print(f"Comando no reconocido: {args[0]}")
+        sys.exit(1)
 
-        # Programar el cron cada 6 horas
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(ejecutar_cron_diario, 'interval', hours=6, id='cron_partidos')
-        scheduler.start()
-        print("✓ Cron programado cada 6 horas.")
-
-        # Levantar Flask
-        app.run(host="0.0.0.0", port=5000)
