@@ -24,7 +24,7 @@ HEADERS = {
 # ✅ URLs globales unificadas para evitar fallos de competidores vacíos en ligas específicas
 URL_ESPN_TODOS = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
 URL_ESPN_FIFA  = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
-ESPN_SUMMARY   = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
+ESPN_SUMMARY   = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary"
 
 def conectar_supabase():
     return psycopg2.connect(
