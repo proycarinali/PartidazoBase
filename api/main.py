@@ -603,7 +603,6 @@ def _verificar_token(datos):
     usuario = (datos.get("usuario") or datos.get("token") or "").strip()
     return usuario == token_esperado
 
-
 def _procesar_partidos(conn):
     """
     Lógica compartida dinámica y robusta:
@@ -663,38 +662,7 @@ def _procesar_partidos(conn):
         print(f"Error obteniendo agenda incremental: {e}")
         return []
 
-    if not partidos_candidatos:
-        print("No se encontraron nuevos partidos finalizados desde el último chequeo.")
-        return []
 
-    cursor = conn.cursor()
-    for id_p in partidos_candidatos:
-        try:
-            # 1. Guardar o actualizar datos básicos del partido
-            procesar_y_guardar_en_supabase(id_p, conn)
-            
-            # 2. CONTROL DE TOKENS: Verificar si ya existen preguntas creadas para este partido
-            cursor.execute("SELECT COUNT(*) FROM preguntas_partido WHERE id_partido = %s;", (id_p,))
-            (cantidad_preguntas,) = cursor.fetchone()
-            
-            if cantidad_preguntas > 0:
-                print(f"  ℹ El partido {id_p} ya tiene {cantidad_preguntas} preguntas registradas. Se omite el llamado a la IA.")
-                continue
-                
-            # 3. FIX CRÍTICO: Si no tiene preguntas, se invoca a Gemini pasándole los parámetros correctos
-            preguntas = generar_preguntas_partido(id_p, conn)
-            guardar_preguntas_en_bd(id_p, preguntas, conn)
-            
-        except Exception as e:
-            print(f"  ERROR procesando partido {id_p}: {e}")
-            traceback.print_exc()
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-    
-    cursor.close()
-    return partidos_candidatos
 
 
 @app.route('/regenerar-trivia', methods=['POST'])
