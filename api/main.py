@@ -126,8 +126,7 @@ def _procesar_partidos(conn):
 def procesar_y_guardar_en_supabase(id_partido, conn):
     print(f"  Procesando partido {id_partido}...")
     try:
-        url_summary_global = f"{ESPN_SUMMARY}/{id_partido}/summary"
-        respuesta = requests.get(url_summary_global, headers=HEADERS, timeout=15)
+        respuesta = requests.get(ESPN_SUMMARY, params={"event": id_partido}, headers=HEADERS, timeout=15)
         
         if respuesta.status_code != 200:
             print(f"  HTTP {respuesta.status_code} para partido {id_partido}, saltando.")
