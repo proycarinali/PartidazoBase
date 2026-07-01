@@ -674,12 +674,10 @@ def cargar_ultimos_mundiales_en_bd():
 
 def generar_trivias_todos_los_mundiales():
     """
-    Recorre todos los mundiales guardados en la tabla 'mundial',
+    Recorre todas las ligas/mundiales guardados en la base de datos,
     y genera la trivia de 20 preguntas para cada uno, ignorando el del año en curso (2026).
     """
     print("🚀 Iniciando generación masiva de trivias de mundiales...")
-    
-    anio_actual = datetime.now().year  # En este caso detectará 2026
     
     try:
         conn = conectar_supabase()
@@ -687,10 +685,10 @@ def generar_trivias_todos_los_mundiales():
         
         # Buscamos todos los mundiales guardados, excepto el del año en curso
         cursor.execute('''
-            SELECT detalle 
-            FROM mundial 
-            WHERE anio != %s;
-        ''', (anio_actual,))
+            SELECT id_mundial, detalle
+            FROM mundial
+            WHERE anio < 2026
+        ''')
         filas = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -700,9 +698,9 @@ def generar_trivias_todos_los_mundiales():
             return
 
         mundiales_procesados = 0
-        for (nombre_mundial,) in filas:
+        for (id_mundial, nombre_mundial) in filas:
             # Llamamos a la función que armamos antes para generar y guardar las 20 preguntas
-            ObtenerTriviaMundialFinalizado(nombre_mundial)
+            ObtenerTriviaMundialFinalizado(id_mundial, nombre_mundial)
             mundiales_procesados += 1
             
             # Una breve pausa de cortesía entre llamadas a la API de Gemini para evitar saturación (Rate Limits)
@@ -713,9 +711,9 @@ def generar_trivias_todos_los_mundiales():
     except Exception as e:
         print(f"❌ Error en el proceso masivo de trivias: {e}")
 
-def ObtenerTriviaMundialFinalizado(nombre_mundial):
+def ObtenerTriviaMundialFinalizado(id_mundial, nombre_mundial):
     """
-    Recibe el nombre de un mundial, le pide a Gemini 20 preguntas avanzadas para fanáticos
+    Recibe el id y el nombre de un mundial, le pide a Gemini 20 preguntas avanzadas para fanáticos
     y las estructura/guarda en la base de datos junto a sus respuestas.
     """
     print(f"🎲 Generando 20 preguntas de trivia para: {nombre_mundial}...")
@@ -752,10 +750,9 @@ def ObtenerTriviaMundialFinalizado(nombre_mundial):
         }
         resp = requests.post(url, json=payload, timeout=60)
         resp.raise_for_status()
+        
         contenido = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         
-        # Gemini a veces agrega texto extra después del JSON válido (aunque se le pida que no lo haga).
-        # Nos quedamos solo con la porción entre el primer '[' y su ']' de cierre correspondiente.
         inicio = contenido.find('[')
         fin = contenido.rfind(']')
         if inicio != -1 and fin != -1 and fin > inicio:
@@ -768,7 +765,7 @@ def ObtenerTriviaMundialFinalizado(nombre_mundial):
 
         print(f"🔥 Se generaron {len(preguntas)} preguntas de Gemini. Insertando en la BD...")
         
-        id_partido_mundial = "".join(c if c.isalnum() else "_" for c in nombre_mundial.lower())
+        id_partido_mundial = f"mundial_{id_mundial}"
         
         conn = conectar_supabase()
         cursor = conn.cursor()
@@ -776,10 +773,10 @@ def ObtenerTriviaMundialFinalizado(nombre_mundial):
         # Primero guardamos el "partido" ficticio y hacemos COMMIT 
         # para que la FK en preguntas_partido no falle.
         cursor.execute('''
-            INSERT INTO partidos (id_partido, fecha_partido, liga_nombre, equipo_local_nombre, equipo_visitante_nombre, ganador, tanda_penales)
-            VALUES (%s, NOW(), %s, 'Historial', 'Mundial', 'empate', FALSE)
+            INSERT INTO partidos (id_partido, fecha_partido, liga_nombre, equipo_local_nombre, equipo_visitante_nombre, ganador, tanda_penales, id_mundial)
+            VALUES (%s, NOW(), %s, 'Historial', 'Mundial', 'empate', FALSE, %s)
             ON CONFLICT (id_partido) DO NOTHING;
-        ''', (id_partido_mundial, nombre_mundial))
+        ''', (id_partido_mundial, nombre_mundial, id_mundial))
         conn.commit()
         cursor.close()
 
@@ -870,6 +867,7 @@ if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
     borrar_datos_temporada_2026()
+    generar_trivias_todos_los_mundiales()
     if not args:
         print("=== INICIANDO CRON DE PARTIDOS (RAILWAY) ===")
         try:
