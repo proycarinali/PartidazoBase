@@ -757,7 +757,14 @@ def ObtenerTriviaMundialFinalizado(nombre_mundial):
         }
         resp = requests.post(url, json=payload, timeout=60)
         resp.raise_for_status()
+        
         contenido = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        
+        inicio = contenido.find('[')
+        fin = contenido.rfind(']')
+        if inicio != -1 and fin != -1 and fin > inicio:
+            contenido = contenido[inicio:fin + 1]
+        
         preguntas = json.loads(contenido)
         
         if not isinstance(preguntas, list):
