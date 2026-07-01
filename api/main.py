@@ -674,38 +674,33 @@ def cargar_ultimos_mundiales_en_bd():
 
 def generar_trivias_todos_los_mundiales():
     """
-    Recorre todas las ligas/mundiales guardados en la base de datos,
+    Recorre todos los mundiales guardados en la tabla 'mundial',
     y genera la trivia de 20 preguntas para cada uno, ignorando el del año en curso (2026).
     """
     print("🚀 Iniciando generación masiva de trivias de mundiales...")
     
-    anio_actual = str(datetime.now().year) # En este caso detectará "2026"
+    anio_actual = datetime.now().year  # En este caso detectará 2026
     
     try:
         conn = conectar_supabase()
         cursor = conn.cursor()
         
-        # Buscamos todas las ligas que tengan la palabra 'Mundial' en su nombre
+        # Buscamos todos los mundiales guardados, excepto el del año en curso
         cursor.execute('''
-            SELECT detalle as nombre_mundial
-            FROM mundial
-            WHERE anio<2026
-        ''')
+            SELECT detalle 
+            FROM mundial 
+            WHERE anio != %s;
+        ''', (anio_actual,))
         filas = cursor.fetchall()
         cursor.close()
         conn.close()
         
         if not filas:
-            print("⚠️ No se encontraron mundiales registrados en la tabla 'ligas'. Ejecutá primero el comando de carga.")
+            print("⚠️ No se encontraron mundiales registrados en la tabla 'mundial'. Ejecutá primero el comando de carga.")
             return
 
         mundiales_procesados = 0
         for (nombre_mundial,) in filas:
-            # Filtro para omitir el mundial en curso (ej: si contiene "2026")
-            if anio_actual in nombre_mundial:
-                print(f"⏩ Saltando '{nombre_mundial}' por ser el mundial del año en curso ({anio_actual}).")
-                continue
-                
             # Llamamos a la función que armamos antes para generar y guardar las 20 preguntas
             ObtenerTriviaMundialFinalizado(nombre_mundial)
             mundiales_procesados += 1
@@ -757,9 +752,10 @@ def ObtenerTriviaMundialFinalizado(nombre_mundial):
         }
         resp = requests.post(url, json=payload, timeout=60)
         resp.raise_for_status()
-        
         contenido = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         
+        # Gemini a veces agrega texto extra después del JSON válido (aunque se le pida que no lo haga).
+        # Nos quedamos solo con la porción entre el primer '[' y su ']' de cierre correspondiente.
         inicio = contenido.find('[')
         fin = contenido.rfind(']')
         if inicio != -1 and fin != -1 and fin > inicio:
@@ -805,6 +801,12 @@ def borrar_datos_temporada_2026():
     """
     print("⚠️ Iniciando proceso de eliminación de datos de las ligas 2026...")
     
+    # Confirmación de seguridad en consola antes de proceder
+    confirmacion = input("¿Estás seguro de que querés borrar TODOS los datos de los partidos de 2026? (si/no): ")
+    if confirmacion.lower() != 'si':
+        print("❌ Operación cancelada por el usuario.")
+        return
+
     conn = conectar_supabase()
     cursor = conn.cursor()
     
@@ -874,7 +876,6 @@ if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
     borrar_datos_temporada_2026()
-    generar_trivias_todos_los_mundiales()
     if not args:
         print("=== INICIANDO CRON DE PARTIDOS (RAILWAY) ===")
         try:
