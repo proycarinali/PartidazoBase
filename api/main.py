@@ -611,7 +611,7 @@ def cargar_ultimos_mundiales_en_bd():
     prompt_usuario = "Dame un array JSON con los nombres oficiales de los últimos mundiales (Ejemplo: ['Copa Mundial de la FIFA Corea/Japón 2002', 'Copa Mundial de la FIFA Alemania 2006', ...])."
 
     try:
-        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [
                 {"role": "user", "parts": [{"text": prompt_sistema + "\n\n" + prompt_usuario}]}
