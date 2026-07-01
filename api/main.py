@@ -590,6 +590,137 @@ def test_diagnostico():
             print(f"      ❌ Error con ESPN en fecha {f_str}: {e}")
     print("\n==================================================")
 
+def cargar_ultimos_mundiales_en_bd():
+    """
+    Le pregunta a Gemini cuáles son los últimos mundiales de fútbol masculinos (p. ej. desde 1998 o 2002 en adelante)
+    y los guarda en una tabla (por ejemplo, asumiendo una tabla llamada 'ligas' o adaptando el insert).
+    """
+    print("🔮 Consultando a Gemini sobre los últimos mundiales...")
+    
+    prompt_sistema = (
+        "Sos un experto en historia del fútbol. Necesito una lista de los últimos mundiales de fútbol de la FIFA masculinos "
+        "(por ejemplo, los últimos 6 o 7 mundiales). "
+        "Respondé estrictamente en JSON puro, un array de strings con el nombre formateado de cada mundial. "
+        "No uses markdown, no uses bloques de código (```json)."
+    )
+    
+    prompt_usuario = "Dame un array JSON con los nombres oficiales de los últimos mundiales (Ejemplo: ['Copa Mundial de la FIFA Corea/Japón 2002', 'Copa Mundial de la FIFA Alemania 2006', ...])."
+
+    try:
+        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [
+                {"role": "user", "parts": [{"text": prompt_sistema + "\n\n" + prompt_usuario}]}
+            ],
+            "generationConfig": {
+                "temperature": 0.3,
+                "responseMimeType": "application/json",
+            },
+        }
+        resp = requests.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        contenido = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        mundiales = json.loads(contenido)
+        
+        if not isinstance(mundiales, list):
+            print("❌ El formato devuelto por la IA no es una lista.")
+            return
+
+        print(f"✅ Se encontraron {len(mundiales)} mundiales. Guardando en la Base de Datos...")
+        
+        conn = conectar_supabase()
+        cursor = conn.cursor()
+        
+        for mundial_nombre in mundiales:
+            # Reemplaza 'ligas' y 'nombre_liga' por los nombres exactos de tu tabla si difieren.
+            # Se usa un ID generado con UUID ya que los mundiales no vienen de un ID numérico de ESPN.
+            id_liga_mundial = f"mundial_{uuid.uuid4().hex[:8]}" 
+            
+            cursor.execute('''
+                INSERT INTO ligas (id_liga, nombre_liga)
+                VALUES (%s, %s)
+                ON CONFLICT (nombre_liga) DO NOTHING; 
+            ''', (id_liga_mundial, mundial_nombre))
+            
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("✓ Todos los mundiales han sido procesados y guardados con éxito.")
+
+
+def ObtenerTriviaMundialFinalizado(nombre_mundial):
+    """
+    Recibe el nombre de un mundial, le pide a Gemini 20 preguntas avanzadas para fanáticos
+    y las estructura/guarda en la base de datos junto a sus respuestas.
+    """
+    print(f"🎲 Generando 20 preguntas de trivia para: {nombre_mundial}...")
+    
+    prompt_sistema = (
+        "Sos un historiador y experto en estadísticas de fútbol. Creá preguntas de trivia avanzadas "
+        "para fanáticos exigentes sobre el mundial solicitado. "
+        "Respondés siempre en JSON puro, sin markdown, sin bloques de código.\n"
+        "El JSON debe ser un array de exactamente 20 objetos. "
+        "Cada objeto tiene esta estructura:\n"
+        '{"pregunta": "...", "opciones": ['
+        '{"letra": "A", "texto": "...", "correcta": false},'
+        '{"letra": "B", "texto": "...", "correcta": false},'
+        '{"letra": "C", "texto": "...", "correcta": true},'
+        '{"letra": "D", "texto": "...", "correcta": false}'
+        "]}\n"
+        "Exactamente una opción por pregunta debe tener correcta=true. "
+        "Incluí variedad: campeones, subcampeones, goleadores, sorpresas, partidos épicos, sedes o hitos históricos de esa edición."
+    )
+    
+    prompt_usuario = f"Generá la trivia de 20 preguntas difíciles para el torneo: {nombre_mundial}"
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [
+                {"role": "user", "parts": [{"text": prompt_sistema + "\n\n" + prompt_usuario}]}
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 8000, 
+                "responseMimeType": "application/json",
+            },
+        }
+        resp = requests.post(url, json=payload, timeout=60)
+        resp.raise_for_status()
+        contenido = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        preguntas = json.loads(contenido)
+        
+        if not isinstance(preguntas, list):
+            preguntas = preguntas.get("preguntas", list(preguntas.values())[0])
+
+        print(f"🔥 Se generaron {len(preguntas)} preguntas de Gemini. Insertando en la BD...")
+        
+        id_partido_mundial = "".join(c if c.isalnum() else "_" for c in nombre_mundial.lower())
+        
+        conn = conectar_supabase()
+        cursor = conn.cursor()
+        
+        # Primero guardamos el "partido" ficticio y hacemos COMMIT 
+        # para que la FK en preguntas_partido no falle.
+        cursor.execute('''
+            INSERT INTO partidos (id_partido, fecha_partido, liga_nombre, equipo_local_nombre, equipo_visitante_nombre, ganador, tanda_penales)
+            VALUES (%s, NOW(), %s, 'Historial', 'Mundial', 'empate', FALSE)
+            ON CONFLICT (id_partido) DO NOTHING;
+        ''', (id_partido_mundial, nombre_mundial))
+        conn.commit()
+        cursor.close()
+
+        # Ahora sí, llamamos a tu función que guarda las preguntas Y las respuestas (opciones)
+        guardar_preguntas_en_bd(id_partido_mundial, preguntas, conn)
+        
+        conn.close()
+        print(f"✓ Trivia completa (preguntas y opciones) de '{nombre_mundial}' guardada correctamente.")
+        return preguntas
+
+    except Exception as e:
+        print(f"❌ Error al generar u obtener la trivia del mundial: {e}")
+        return []
+
 if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
