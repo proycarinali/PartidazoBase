@@ -687,7 +687,7 @@ def generar_trivias_todos_los_mundiales():
         
         # Buscamos todas las ligas que tengan la palabra 'Mundial' en su nombre
         cursor.execute('''
-            SELECT nombre_liga 
+            SELECT detalle
             FROM mundial
             WHERE anio<anio_actual
         ''')
