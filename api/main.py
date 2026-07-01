@@ -431,6 +431,9 @@ def ejecutar_cron_diario():
         traceback.print_exc()
         return
     try:
+        
+        cargar_ultimos_mundiales_en_bd()
+        generar_trivias_todos_los_mundiales()
         partidos = _procesar_partidos(conn)
         print(f"=== CRON finalizado: {len(partidos)} partido(s) procesados. {datetime.now()} ===")
     except Exception as e:
@@ -647,6 +650,51 @@ def cargar_ultimos_mundiales_en_bd():
         conn.close()
         print("✓ Todos los mundiales han sido procesados y guardados con éxito.")
 
+def generar_trivias_todos_los_mundiales():
+    """
+    Recorre todas las ligas/mundiales guardados en la base de datos,
+    y genera la trivia de 20 preguntas para cada uno, ignorando el del año en curso (2026).
+    """
+    print("🚀 Iniciando generación masiva de trivias de mundiales...")
+    
+    anio_actual = str(datetime.now().year) # En este caso detectará "2026"
+    
+    try:
+        conn = conectar_supabase()
+        cursor = conn.cursor()
+        
+        # Buscamos todas las ligas que tengan la palabra 'Mundial' en su nombre
+        cursor.execute('''
+            SELECT nombre_liga 
+            FROM ligas 
+            WHERE nombre_liga ILIKE '%Mundial%';
+        ''')
+        filas = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if not filas:
+            print("⚠️ No se encontraron mundiales registrados en la tabla 'ligas'. Ejecutá primero el comando de carga.")
+            return
+
+        mundiales_procesados = 0
+        for (nombre_mundial,) in filas:
+            # Filtro para omitir el mundial en curso (ej: si contiene "2026")
+            if anio_actual in nombre_mundial:
+                print(f"⏩ Saltando '{nombre_mundial}' por ser el mundial del año en curso ({anio_actual}).")
+                continue
+                
+            # Llamamos a la función que armamos antes para generar y guardar las 20 preguntas
+            ObtenerTriviaMundialFinalizado(nombre_mundial)
+            mundiales_procesados += 1
+            
+            # Una breve pausa de cortesía entre llamadas a la API de Gemini para evitar saturación (Rate Limits)
+            time.sleep(2)
+            
+        print(f"🏁 Proceso masivo finalizado. Se generaron trivias para {mundiales_procesados} mundiales.")
+
+    except Exception as e:
+        print(f"❌ Error en el proceso masivo de trivias: {e}")
 
 def ObtenerTriviaMundialFinalizado(nombre_mundial):
     """
@@ -721,10 +769,88 @@ def ObtenerTriviaMundialFinalizado(nombre_mundial):
         print(f"❌ Error al generar u obtener la trivia del mundial: {e}")
         return []
 
+def borrar_datos_temporada_2026():
+    """
+    Elimina en cascada todos los datos (respuestas, preguntas, eventos, jugadores y partidos)
+    asociados a las ligas del año 2026 en la base de datos.
+    """
+    print("⚠️ Iniciando proceso de eliminación de datos de las ligas 2026...")
+    
+    # Confirmación de seguridad en consola antes de proceder
+    confirmacion = input("¿Estás seguro de que querés borrar TODOS los datos de los partidos de 2026? (si/no): ")
+    if confirmacion.lower() != 'si':
+        print("❌ Operación cancelada por el usuario.")
+        return
+
+    conn = conectar_supabase()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Borrar opciones de respuesta asociadas a preguntas de partidos del 2026
+        print(" -> Eliminando respuestas de preguntas de trivia (2026)...")
+        cursor.execute('''
+            DELETE FROM respuestas_preguntas 
+            WHERE id_pregunta IN (
+                SELECT id_pregunta FROM preguntas_partido 
+                WHERE id_partido IN (
+                    SELECT id_partido FROM partidos WHERE liga_nombre ILIKE '%2026%'
+                )
+            );
+        ''')
+        
+        # 2. Borrar preguntas de trivia asociadas a partidos del 2026
+        print(" -> Eliminando preguntas de trivia (2026)...")
+        cursor.execute('''
+            DELETE FROM preguntas_partido 
+            WHERE id_partido IN (
+                SELECT id_partido FROM partidos WHERE liga_nombre ILIKE '%2026%'
+            );
+        ''')
+        
+        # 3. Borrar eventos clave de los partidos del 2026
+        print(" -> Eliminando eventos de partidos (2026)...")
+        cursor.execute('''
+            DELETE FROM eventos_partido 
+            WHERE id_partido IN (
+                SELECT id_partido FROM partidos WHERE liga_nombre ILIKE '%2026%'
+            );
+        ''')
+        
+        # 4. Borrar alineaciones/jugadores de los partidos del 2026
+        print(" -> Eliminando jugadores por partido (2026)...")
+        cursor.execute('''
+            DELETE FROM jugadores_partido 
+            WHERE id_partido IN (
+                SELECT id_partido FROM partidos WHERE liga_nombre ILIKE '%2026%'
+            );
+        ''')
+        
+        # 5. Borrar finalmente los registros de la tabla principal de partidos
+        print(" -> Eliminando registros principales de la tabla partidos (2026)...")
+        cursor.execute('''
+            DELETE FROM partidos 
+            WHERE liga_nombre ILIKE '%2026%';
+        ''', )
+        
+        # Si tenés las ligas del 2026 registradas de forma independiente en la tabla 'ligas'
+        # y también querés removerlas, podés descomentar las siguientes líneas:
+        # print(" -> Eliminando ligas de la temporada 2026...")
+        # cursor.execute("DELETE FROM ligas WHERE nombre_liga ILIKE '%2026%';")
+
+        conn.commit()
+        print("✅ ¡Limpieza completada con éxito! Todos los datos de las ligas del 2026 han sido removidos.")
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error crítico durante la eliminación de datos: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
 if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
-    
+    borrar_datos_temporada_2026()
     if not args:
         print("=== INICIANDO CRON DE PARTIDOS (RAILWAY) ===")
         try:
