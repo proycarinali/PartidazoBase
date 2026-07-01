@@ -867,6 +867,8 @@ if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
     borrar_datos_temporada_2026()
+    cargar_ultimos_mundiales_en_bd()
+    generar_trivias_todos_los_mundiales()
     if not args:
         print("=== INICIANDO CRON DE PARTIDOS (RAILWAY) ===")
         try:
