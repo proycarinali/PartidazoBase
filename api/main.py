@@ -689,7 +689,7 @@ def generar_trivias_todos_los_mundiales():
         cursor.execute('''
             SELECT detalle
             FROM mundial
-            WHERE anio<anio_actual
+            WHERE anio<2026
         ''')
         filas = cursor.fetchall()
         cursor.close()
