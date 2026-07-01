@@ -1,4 +1,5 @@
 import requests
+import re
 import traceback
 import psycopg2
 from psycopg2 import extras
@@ -634,21 +635,39 @@ def cargar_ultimos_mundiales_en_bd():
         conn = conectar_supabase()
         cursor = conn.cursor()
         
+        mundiales_insertados = 0
+        mundiales_ya_existentes = 0
+        
         for mundial_nombre in mundiales:
-            # Reemplaza 'ligas' y 'nombre_liga' por los nombres exactos de tu tabla si difieren.
-            # Se usa un ID generado con UUID ya que los mundiales no vienen de un ID numérico de ESPN.
-            id_liga_mundial = f"mundial_{uuid.uuid4().hex[:8]}" 
+            # Extraemos el año (4 dígitos) del nombre del mundial, ej: "Copa Mundial ... 2002" -> 2002
+            match_anio = re.search(r'(\d{4})', mundial_nombre)
+            if not match_anio:
+                print(f"⚠️ No se pudo determinar el año para '{mundial_nombre}'. Se omite.")
+                continue
             
+            anio_mundial = int(match_anio.group(1))
+            
+            # Buscamos si ya existe un mundial guardado con ese año
             cursor.execute('''
-                INSERT INTO ligas (id_liga, nombre_liga)
-                VALUES (%s, %s)
-                ON CONFLICT (nombre_liga) DO NOTHING; 
-            ''', (id_liga_mundial, mundial_nombre))
+                SELECT id_mundial FROM mundial WHERE anio = %s;
+            ''', (anio_mundial,))
+            existente = cursor.fetchone()
+            
+            if existente:
+                mundiales_ya_existentes += 1
+                continue
+            
+            # No existe todavía: lo insertamos
+            cursor.execute('''
+                INSERT INTO mundial (detalle, anio)
+                VALUES (%s, %s);
+            ''', (mundial_nombre, anio_mundial))
+            mundiales_insertados += 1
             
         conn.commit()
         cursor.close()
         conn.close()
-        print("✓ Todos los mundiales han sido procesados y guardados con éxito.")
+        print(f"✓ Proceso finalizado. Insertados: {mundiales_insertados}. Ya existentes: {mundiales_ya_existentes}.")
 
     except Exception as e:
         print(f"❌ Error al cargar los mundiales en la base de datos: {e}")
@@ -779,6 +798,12 @@ def borrar_datos_temporada_2026():
     """
     print("⚠️ Iniciando proceso de eliminación de datos de las ligas 2026...")
     
+    # Confirmación de seguridad en consola antes de proceder
+    confirmacion = input("¿Estás seguro de que querés borrar TODOS los datos de los partidos de 2026? (si/no): ")
+    if confirmacion.lower() != 'si':
+        print("❌ Operación cancelada por el usuario.")
+        return
+
     conn = conectar_supabase()
     cursor = conn.cursor()
     
