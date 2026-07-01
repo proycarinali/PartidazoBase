@@ -779,12 +779,6 @@ def borrar_datos_temporada_2026():
     """
     print("⚠️ Iniciando proceso de eliminación de datos de las ligas 2026...")
     
-    # Confirmación de seguridad en consola antes de proceder
-    confirmacion = input("¿Estás seguro de que querés borrar TODOS los datos de los partidos de 2026? (si/no): ")
-    if confirmacion.lower() != 'si':
-        print("❌ Operación cancelada por el usuario.")
-        return
-
     conn = conectar_supabase()
     cursor = conn.cursor()
     
