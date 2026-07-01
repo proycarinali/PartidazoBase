@@ -650,6 +650,9 @@ def cargar_ultimos_mundiales_en_bd():
         conn.close()
         print("✓ Todos los mundiales han sido procesados y guardados con éxito.")
 
+    except Exception as e:
+        print(f"❌ Error al cargar los mundiales en la base de datos: {e}")
+
 def generar_trivias_todos_los_mundiales():
     """
     Recorre todas las ligas/mundiales guardados en la base de datos,
