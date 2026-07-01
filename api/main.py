@@ -688,8 +688,8 @@ def generar_trivias_todos_los_mundiales():
         # Buscamos todas las ligas que tengan la palabra 'Mundial' en su nombre
         cursor.execute('''
             SELECT nombre_liga 
-            FROM ligas 
-            WHERE nombre_liga ILIKE '%Mundial%';
+            FROM mundial
+            WHERE anio<anio_actual
         ''')
         filas = cursor.fetchall()
         cursor.close()
@@ -867,7 +867,6 @@ if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
     borrar_datos_temporada_2026()
-    cargar_ultimos_mundiales_en_bd()
     generar_trivias_todos_los_mundiales()
     if not args:
         print("=== INICIANDO CRON DE PARTIDOS (RAILWAY) ===")
