@@ -765,7 +765,7 @@ def ObtenerTriviaMundialFinalizado(id_mundial, nombre_mundial):
 
         print(f"🔥 Se generaron {len(preguntas)} preguntas de Gemini. Insertando en la BD...")
         
-        id_partido_mundial = f"mundial_{id_mundial}"
+        id_partido_mundial = str(id_mundial)
         
         conn = conectar_supabase()
         cursor = conn.cursor()
