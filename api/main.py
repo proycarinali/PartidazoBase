@@ -603,7 +603,7 @@ def cargar_ultimos_mundiales_en_bd():
     
     prompt_sistema = (
         "Sos un experto en historia del fútbol. Necesito una lista de los últimos mundiales de fútbol de la FIFA masculinos "
-        "(por ejemplo, los últimos 6 o 7 mundiales). "
+        "(por ejemplo, los últimos 7 o 8 mundiales). "
         "Respondé estrictamente en JSON puro, un array de strings con el nombre formateado de cada mundial. "
         "No uses markdown, no uses bloques de código (```json)."
     )
@@ -687,7 +687,6 @@ def generar_trivias_todos_los_mundiales():
         cursor.execute('''
             SELECT id_mundial, detalle
             FROM mundial
-            WHERE anio < 2026
         ''')
         filas = cursor.fetchall()
         cursor.close()
@@ -720,7 +719,7 @@ def ObtenerTriviaMundialFinalizado(id_mundial, nombre_mundial):
     
     prompt_sistema = (
         "Sos un historiador y experto en estadísticas de fútbol. Creá preguntas de trivia avanzadas "
-        "para fanáticos exigentes sobre el mundial solicitado. "
+        "para fanáticos exigentes sobre el mundial solicitado. Siempre agrega una o dos preguntas relacionadas a Argentina y el mundial del que haces las preguntas."
         "Respondés siempre en JSON puro, sin markdown, sin bloques de código.\n"
         "El JSON debe ser un array de exactamente 20 objetos. "
         "Cada objeto tiene esta estructura:\n"
